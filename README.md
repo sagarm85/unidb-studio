@@ -91,11 +91,12 @@ Arguments are `[subject] [ttl_seconds]` (defaults `dev` / `3600`).
 
 ## Notes / known limitations
 
-- **Column names.** `POST /sql`'s `rows` result is an array of positional
-  arrays with **no column names on the wire** (see REST_API.md). The record
-  browser labels columns from `GET /tables` introspection; the free-form SQL
-  editor, which can't know the shape of an arbitrary projection, falls back to
-  positional headers (`col 0`, `col 1`, …).
+- **Column names.** `POST /sql`'s `rows` result carries a `columns` array
+  (output names in order — resolved names for projections, joins and
+  aggregates; `"QUERY PLAN"` for `EXPLAIN`), which the grid uses directly for
+  every query, editor included. For older servers that predate this enrichment
+  the grid falls back to `GET /tables` names (record browser) or positional
+  headers (`col 0`, `col 1`, …).
 - **CORS.** The browser calls the server directly, so `unidb-server` must allow
   this origin. If requests fail with a network error, check CORS/binding.
 - Requires a reachable server for live data. With no/invalid config the UI still

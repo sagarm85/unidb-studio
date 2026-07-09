@@ -1,8 +1,9 @@
 <script>
   import { formatCell, isNull } from './format.js';
 
-  // One ExecResult from /sql, plus optional real column names (the `rows` wire
-  // shape carries none, so we fall back to positional headers).
+  // One ExecResult from /sql. The enriched `rows` result carries `columns`
+  // (output names in order). `columns` prop is an optional fallback for older
+  // servers that predate the enrichment (e.g. from /tables introspection).
   let { result, columns = null } = $props();
 
   const affectedVerb = {
@@ -20,12 +21,13 @@
 
   const rows = $derived(result?.type === 'rows' ? (result.rows ?? []) : []);
   const colCount = $derived(rows.reduce((m, r) => Math.max(m, r.length), 0));
-  // Real names when the caller knows them (record browser); else col 0..n-1.
-  const headers = $derived(
-    columns && columns.length
-      ? columns
-      : Array.from({ length: colCount }, (_, i) => `col ${i}`),
-  );
+  // Prefer server-provided column names; fall back to caller-supplied names
+  // (older servers), then positional col 0..n-1 as a last resort.
+  const headers = $derived.by(() => {
+    if (result?.columns?.length) return result.columns;
+    if (columns && columns.length) return columns;
+    return Array.from({ length: colCount }, (_, i) => `col ${i}`);
+  });
 </script>
 
 {#if result?.type === 'rows'}
