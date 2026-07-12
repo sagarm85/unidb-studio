@@ -5,9 +5,10 @@
   import SqlEditor from './lib/SqlEditor.svelte';
   import RecordBrowser from './lib/RecordBrowser.svelte';
   import CsvUpload from './lib/CsvUpload.svelte';
+  import SchemaVisualizer from './lib/SchemaVisualizer.svelte';
   import { quoteIdent } from './lib/format.js';
 
-  let tab = $state('sql'); // 'sql' | 'records' | 'csv'
+  let tab = $state('sql'); // 'sql' | 'records' | 'schema' | 'csv'
   let selectedTable = $state(null);
   let sql = $state('SELECT 1;');
   let paramsText = $state('');
@@ -89,6 +90,7 @@
         <button class:active={tab === 'records'} onclick={() => (tab = 'records')} disabled={!selectedTable}>
           Record browser
         </button>
+        <button class:active={tab === 'schema'} onclick={() => (tab = 'schema')}>Schema</button>
         <button class:active={tab === 'csv'} onclick={() => (tab = 'csv')}>CSV import</button>
       </nav>
 
@@ -104,6 +106,8 @@
           {:else}
             <p class="muted">Pick a table from the sidebar.</p>
           {/if}
+        {:else if tab === 'schema'}
+          <SchemaVisualizer {tables} />
         {:else if tab === 'csv'}
           <CsvUpload {tables} />
         {/if}
