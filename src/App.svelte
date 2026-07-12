@@ -1,5 +1,6 @@
 <script>
-  import { getTables, BASE_URL, HAS_TOKEN, IS_CONFIGURED } from './lib/api.js';
+  import { getTables, BASE_URL, IS_CONFIGURED } from './lib/api.js';
+  import TokenStatus from './lib/TokenStatus.svelte';
   import TablesSidebar from './lib/TablesSidebar.svelte';
   import SqlEditor from './lib/SqlEditor.svelte';
   import RecordBrowser from './lib/RecordBrowser.svelte';
@@ -58,7 +59,7 @@
       {#if !IS_CONFIGURED}
         <span class="badge warn">not configured</span>
       {:else}
-        <span class="badge {HAS_TOKEN ? 'ok' : 'warn'}">{HAS_TOKEN ? 'token set' : 'no token'}</span>
+        <TokenStatus />
         <code class="url">{BASE_URL}</code>
       {/if}
     </div>
@@ -154,10 +155,6 @@
     border-radius: 10px;
     font-size: 11px;
     font-weight: 600;
-  }
-  .badge.ok {
-    background: rgba(46, 160, 67, 0.15);
-    color: var(--accent);
   }
   .badge.warn {
     background: rgba(210, 153, 34, 0.15);
