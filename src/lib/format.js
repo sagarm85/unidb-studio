@@ -19,8 +19,15 @@ export function columnSummary(columns, max = 4) {
   return columns.length > max ? `${shown}, +${columns.length - max} more` : shown;
 }
 
-// Quote a SQL identifier defensively for interpolation into generated queries
-// (table/column names from introspection). unidb uses double-quoted idents.
+// Interpolate a SQL identifier from introspection into generated queries.
+// unidb resolves only BARE identifiers: it keeps the quote characters when
+// converting a double-quoted name, so `SELECT * FROM "demo"` looks up a table
+// literally named `"demo"` and 404s. Names from introspection are engine-
+// created and therefore always plain, so pass those through bare; anything
+// unexpected still gets quoted so it can never break out of the query (the
+// engine will then reject it honestly rather than us interpolating it raw).
 export function quoteIdent(name) {
-  return `"${String(name).replace(/"/g, '""')}"`;
+  const s = String(name);
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return s;
+  return `"${s.replace(/"/g, '""')}"`;
 }

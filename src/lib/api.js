@@ -4,12 +4,23 @@
 
 const ENV = import.meta.env ?? {};
 const RAW_URL = ENV.VITE_UNIDB_URL ?? '';
-const TOKEN = ENV.VITE_UNIDB_TOKEN ?? '';
 
 // Trailing slash would double up when we append paths.
 export const BASE_URL = RAW_URL.replace(/\/+$/, '');
-export const HAS_TOKEN = TOKEN.trim().length > 0;
 export const IS_CONFIGURED = BASE_URL.length > 0;
+
+// The bearer token starts from the build-time env but is mutable at runtime so
+// the header's "Generate token" flow (dev only) can apply a fresh one without
+// a rebuild. All requests read it through here.
+let token = (ENV.VITE_UNIDB_TOKEN ?? '').trim();
+
+export function getToken() {
+  return token;
+}
+
+export function setToken(t) {
+  token = (t ?? '').trim();
+}
 
 // A normalized error the UI can render uniformly: always has {message, code}.
 // `code` mirrors the machine-readable codes in REST_API.md's error table, or a
@@ -25,7 +36,7 @@ export class ApiError extends Error {
 
 function authHeaders(extra = {}) {
   const h = { ...extra };
-  if (HAS_TOKEN) h['Authorization'] = `Bearer ${TOKEN}`;
+  if (token) h['Authorization'] = `Bearer ${token}`;
   return h;
 }
 

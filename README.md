@@ -76,6 +76,13 @@ echo "VITE_UNIDB_TOKEN=$TOKEN" >> .env.local
 
 Arguments are `[subject] [ttl_seconds]` (defaults `dev` / `3600`).
 
+Or skip the shell entirely: under `npm run dev` the header has a **Generate
+token** button (backed by a dev-only `GET /__token` Vite middleware). If the
+token in `.env.local` is still active it is reused as-is; otherwise a fresh
+1-hour JWT is minted with `UNIDB_JWT_SECRET` (default `dev-secret`) and
+written back to `.env.local`. The header also shows a live countdown to the
+token's expiry. The endpoint exists only in the dev server, never in builds.
+
 ## Two honesty caveats
 
 - **The dev token is dev-only.** It embeds trust in the shared HS256 secret. A
