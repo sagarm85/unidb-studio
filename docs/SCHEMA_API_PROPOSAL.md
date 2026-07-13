@@ -18,18 +18,26 @@
 > catalog relations and the worked introspection queries that will drive this
 > studio's ERD.
 
-## What the studio does today (until Milestone 18 lands)
+## What the studio does today (Milestone 18 has landed)
 
-The schema visualizer degrades gracefully in three tiers (see
-`src/lib/api.js` → `getSchema()` and `src/lib/schema.js`):
+Milestone 18 shipped the queryable catalog, so `getSchema()` now reads **real**
+primary/foreign keys by `SELECT`ing over `POST /sql` — there is **no** `GET
+/schema` route, by design. The visualizer still degrades gracefully in three
+tiers (`src/lib/api.js` → `getSchema()`, assembled by `buildCatalogSchema()` in
+`src/lib/schema.js`):
 
-1. **`server`** — if a `/schema`-style payload is ever available, use it as-is.
-2. **`inferred`** — fall back to `GET /tables` and infer foreign keys from
-   column-name conventions (`user_id → users.id`); drawn as dashed edges with an
-   amber banner.
+1. **`server`** — query the catalog and build the graph from real metadata:
+   `information_schema.columns` (nodes), `unidb_catalog.indexes` (VEC/ANN badges),
+   `table_constraints`/`key_column_usage` (primary keys), and the 4-way
+   `referential_constraints` join (foreign-key edges, composite-key aware).
+   Edges are solid; no banner.
+2. **`inferred`** — a pre-M18 server that lacks the catalog: fall back to
+   `GET /tables` and infer foreign keys from column-name conventions
+   (`user_id → users.id`); drawn as dashed edges with an amber banner.
 3. **`demo`** — no tables at all → a built-in sample schema so the canvas is
    never blank.
 
-Once the engine exposes the Milestone 18 catalog, the studio queries it over
-`POST /sql` (e.g. `SELECT … FROM information_schema.referential_constraints`) and
-the inferred/dashed edges become real/solid — **no new engine REST route needed.**
+The exact relation/column contract and the reconstruct-DDL-from-metadata rules
+this studio relies on live in the engine repo:
+`../unidb/docs/engine_access_guide.md` (§4 Introspect, §6 the schema-explorer
+recipe the studio is the production version of).

@@ -2,20 +2,33 @@
   import { columnSummary } from './format.js';
   import CollapsibleSection from './CollapsibleSection.svelte';
 
-  // Presentational: App owns the fetch and passes state in.
-  let { tables = [], loading = false, error = null, supported = true, selected = null, onSelect, onRefresh } = $props();
+  // Presentational: App owns the fetch and passes state in. DDL callbacks
+  // (New table / Manage) are only offered when `canDDL` (a live catalog).
+  let {
+    tables = [],
+    loading = false,
+    error = null,
+    supported = true,
+    selected = null,
+    canDDL = false,
+    onSelect,
+    onRefresh,
+    onNewTable,
+    onManageTable,
+  } = $props();
 
-  // Client-side table search (Supabase-style). Matches on table name and, as a
-  // convenience, on any column name so you can find "the table with `email`".
+  // Client-side table search (Supabase-style). Name matches win: typing "user"
+  // shows the `users` table, not every table with a `user_id` column. Only when
+  // NO table name matches do we fall back to column-name matches, so you can
+  // still find "the table with `email`".
   let query = $state('');
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
     if (!q) return tables;
-    return tables.filter((t) => {
-      if (t.name.toLowerCase().includes(q)) return true;
-      return (t.columns ?? []).some((c) => c.name.toLowerCase().includes(q));
-    });
+    const byName = tables.filter((t) => t.name.toLowerCase().includes(q));
+    if (byName.length) return byName;
+    return tables.filter((t) => (t.columns ?? []).some((c) => c.name.toLowerCase().includes(q)));
   });
 </script>
 
@@ -24,6 +37,10 @@
     {#snippet action()}
       <button class="refresh" onclick={() => onRefresh?.()} disabled={loading} title="Reload tables">↻</button>
     {/snippet}
+
+    {#if canDDL}
+      <button class="newtable" onclick={() => onNewTable?.()}>+ New table</button>
+    {/if}
 
     {#if supported && tables.length > 0}
       <div class="search">
@@ -51,11 +68,14 @@
     {:else}
       <ul>
         {#each filtered as t}
-          <li>
+          <li class="trow" class:active={selected === t.name}>
             <button class="table" class:active={selected === t.name} onclick={() => onSelect?.(t)}>
               <span class="name">{t.name}</span>
               <span class="cols">{columnSummary(t.columns)}</span>
             </button>
+            {#if canDDL}
+              <button class="manage" title="Manage table" aria-label="Manage {t.name}" onclick={() => onManageTable?.(t)}>⋮</button>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -82,6 +102,46 @@
   }
   .refresh:hover {
     color: var(--text);
+  }
+  .newtable {
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 6px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: none;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .newtable:hover {
+    border-color: var(--accent);
+    background: var(--panel);
+  }
+  .trow {
+    display: flex;
+    align-items: stretch;
+    border-radius: 6px;
+  }
+  .trow .manage {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 15px;
+    padding: 0 6px;
+    opacity: 0;
+  }
+  .trow:hover .manage,
+  .trow.active .manage {
+    opacity: 1;
+  }
+  .trow .manage:hover {
+    color: var(--text);
+  }
+  .trow.active .manage {
+    color: #fff;
   }
   .search {
     margin-bottom: 10px;
@@ -110,7 +170,8 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     text-align: left;
     background: none;
     border: none;
