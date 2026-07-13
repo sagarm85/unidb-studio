@@ -319,31 +319,38 @@
       <!-- Histogram -->
       {#if logs.length}
         <div class="hist-wrap" aria-hidden="true">
-          <!-- bars -->
-          <svg class="hist-svg" viewBox="0 0 {HIST_N * 11} 48" preserveAspectRatio="none">
-            {#each histogram as count, i}
-              {@const h = Math.max(count ? 3 : 0, Math.round((count / histMax) * 40))}
-              <rect
-                x={i * 11 + 1} y={48 - h - 2}
-                width="9" height={h}
-                rx="1.5"
-                fill="var(--accent)"
-                opacity={count ? 0.65 : 0.1}
-              />
-            {/each}
-          </svg>
-          <!-- time axis: inline styles bypass Svelte CSS scoping for position:absolute -->
-          <div style="position:relative;height:20px;border-top:1px solid var(--border);background:var(--panel-alt)">
-            {#each timeLabels as { pct, label }}
-              <span style="position:absolute;left:{pct}%;transform:translateX(-50%);top:3px;font-size:10px;font-family:var(--mono);color:var(--muted);white-space:nowrap;line-height:1">{label}</span>
-            {/each}
+          <!-- bars with equal horizontal inset so both edges have breathing room -->
+          <div class="hist-bars-pad">
+            <svg class="hist-svg" viewBox="0 0 {HIST_N * 11} 48" preserveAspectRatio="none">
+              {#each histogram as count, i}
+                {@const h = Math.max(count ? 3 : 0, Math.round((count / histMax) * 40))}
+                <rect
+                  x={i * 11 + 1} y={48 - h - 2}
+                  width="9" height={h}
+                  rx="1.5"
+                  fill="var(--accent)"
+                  opacity={count ? 0.65 : 0.1}
+                />
+              {/each}
+            </svg>
+            <!-- time axis labels aligned inside the same padded region -->
+            <div style="position:relative;height:20px;border-top:1px solid var(--border);background:var(--panel-alt);overflow:visible">
+              {#each timeLabels as { pct, label }, i}
+                {@const isFirst = i === 0}
+                {@const isLast  = i === timeLabels.length - 1}
+                {@const leftVal = isLast ? '100%' : `${pct}%`}
+                {@const tx      = isFirst ? '0%' : isLast ? '-100%' : '-50%'}
+                <span style="position:absolute;left:{leftVal};transform:translateX({tx});top:3px;font-size:10px;font-family:var(--mono);color:var(--muted);white-space:nowrap;line-height:1">{label}</span>
+              {/each}
+            </div>
           </div>
-          <div class="hist-meta">
-            <span>{visible.length}{excLevels.size || excTargets.size ? ` of ${logs.length}` : ''} shown</span>
-            <span>·</span>
-            <span>{scanned.toLocaleString()} scanned</span>
-            {#if truncated}<span>· scan budget hit</span>{/if}
-          </div>
+        </div>
+        <!-- meta line sits below the card, not inside it -->
+        <div class="hist-meta">
+          <span>{visible.length}{excLevels.size || excTargets.size ? ` of ${logs.length}` : ''} shown</span>
+          <span>·</span>
+          <span>{scanned.toLocaleString()} scanned</span>
+          {#if truncated}<span>· scan budget hit</span>{/if}
         </div>
       {/if}
 
@@ -594,26 +601,28 @@
 
   /* histogram */
   .hist-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
     border: 1px solid var(--border);
     border-radius: 6px;
-    overflow: hidden;
     background: var(--panel-alt);
+    overflow: visible;
+  }
+  /* equal left/right inset so bars don't touch the card edges */
+  .hist-bars-pad {
+    padding: 0 2px;
   }
   .hist-svg {
     width: 100%;
     height: 48px;
     display: block;
+    border-radius: 4px 4px 0 0;
   }
-  /* time axis ticks use inline styles — see template */
+  /* meta line sits below the histogram card */
   .hist-meta {
     display: flex;
     gap: 6px;
     font-size: 11.5px;
     color: var(--muted);
-    padding: 4px 0 0;
+    padding: 4px 2px 0;
   }
 
   /* log table — only this region scrolls */
