@@ -543,3 +543,77 @@ function parseSseFrame(frame) {
   out.data = dataLines.join('\n');
   return out;
 }
+
+// ── Storage (MinIO proxy) ──────────────────────────────────────────────────
+// All routes live under /storage/*. Returns { supported: false } on 404 so
+// the UI can show a graceful "not available" message.
+
+export async function listBuckets() {
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/storage/buckets`, { headers: authHeaders() });
+  } catch (e) { throw transportError(e); }
+  if (res.status === 404) return { supported: false, buckets: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, buckets: await res.json() };
+}
+
+export async function createBucket(name, { isPublic = false } = {}) {
+  const res = await fetch(`${BASE_URL}/storage/buckets`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, public: isPublic }),
+  });
+  if (!res.ok) throw await toApiError(res);
+}
+
+export async function deleteBucket(bucket) {
+  const res = await fetch(`${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}`, {
+    method: 'DELETE', headers: authHeaders(),
+  });
+  if (!res.ok) throw await toApiError(res);
+}
+
+export async function listObjects(bucket, prefix = '') {
+  const qs = new URLSearchParams({ delimiter: '/' });
+  if (prefix) qs.set('prefix', prefix);
+  const res = await fetch(
+    `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects?${qs}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) throw await toApiError(res);
+  // expected shape: { prefixes: string[], objects: [{key,size,last_modified,content_type}] }
+  return res.json();
+}
+
+export async function uploadObject(bucket, key, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}`);
+    const h = authHeaders({ 'Content-Type': file.type || 'application/octet-stream' });
+    Object.entries(h).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    if (onProgress) xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload  = () => xhr.status < 300 ? resolve() : reject(new Error(`Upload failed: ${xhr.status}`));
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.send(file);
+  });
+}
+
+export async function deleteObject(bucket, key) {
+  const res = await fetch(
+    `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}`,
+    { method: 'DELETE', headers: authHeaders() },
+  );
+  if (!res.ok) throw await toApiError(res);
+}
+
+export async function getObjectUrl(bucket, key, expirySecs = 3600) {
+  const qs = new URLSearchParams({ expires: String(expirySecs) });
+  const res = await fetch(
+    `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}/url?${qs}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return j.url ?? j;
+}
