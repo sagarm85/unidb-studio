@@ -347,3 +347,199 @@ export function isSingleSelect(sql) {
   if (trimmed.includes(';')) return false; // multiple statements
   return /^(select|with)\b/i.test(trimmed);
 }
+
+// ---- observability (item 21) --------------------------------------------
+/**
+ * GET /stats — the `EngineStats` activity snapshot (per-statement latency,
+ * WAL-fsync cost, buffer-pool efficiency, lock contention, the vacuum-horizon
+ * gauge, per-table pages, worker governance, server sessions). Poll it for the
+ * Observability tab. Degrades to `{ supported: false }` on a pre-item-21 server
+ * that lacks the route, so the tab can show a hint instead of throwing.
+ *
+ * @returns {Promise<{stats: object|null, supported: boolean}>}
+ */
+export async function getStats() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/stats`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+
+  if (res.status === 404) return { stats: null, supported: false };
+  if (!res.ok) throw await toApiError(res);
+
+  return { stats: await res.json(), supported: true };
+}
+
+// ---- logs surface (item 22) ---------------------------------------------
+/**
+ * GET /logs — a bounded, cursor-paged, newest-first tail over the server's
+ * rotated JSON log files. Superuser-gated on the server. All filters optional;
+ * `limit` is clamped to 500 server-side.
+ *
+ * @param {{level?:string, since?:string, until?:string, q?:string,
+ *          cursor?:string, limit?:number}} [opts]
+ * @returns {Promise<{logs:Array, returned:number, scanned:number,
+ *          truncated:boolean, next_cursor:(string|null), supported:boolean}>}
+ */
+export async function getLogs(opts = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+
+  const qs = new URLSearchParams();
+  for (const k of ['level', 'since', 'until', 'q', 'cursor', 'limit']) {
+    const v = opts[k];
+    if (v != null && v !== '') qs.set(k, String(v));
+  }
+  const query = qs.toString();
+
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/logs${query ? `?${query}` : ''}`, {
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+
+  if (res.status === 404) return { logs: [], supported: false };
+  if (!res.ok) throw await toApiError(res);
+
+  const data = await res.json();
+  return {
+    logs: data.logs ?? [],
+    returned: data.returned ?? 0,
+    scanned: data.scanned ?? 0,
+    truncated: data.truncated ?? false,
+    next_cursor: data.next_cursor ?? null,
+    supported: true,
+  };
+}
+
+// ---- change-event stream (Milestone 20) ---------------------------------
+/**
+ * Opt a table into event capture: POST /tables/{table}/events. Idempotent —
+ * once enabled, every committed INSERT/UPDATE/DELETE also appends a change
+ * event in the same commit.
+ */
+export async function enableTableEvents(table) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/tables/${encodeURIComponent(table)}/events`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+
+  if (!res.ok) throw await toApiError(res);
+}
+
+/**
+ * Open the ephemeral live-tail SSE stream (GET /events/subscribe with no
+ * `consumer`): at-most-once browser tail, no durable offset written.
+ *
+ * We consume it with `fetch` + a ReadableStream reader rather than the native
+ * `EventSource`, because EventSource cannot send an `Authorization` header and
+ * every route except `/metrics` is Bearer-gated. This also lets us set the
+ * `Last-Event-ID` resume header explicitly.
+ *
+ * @param {object} opts
+ * @param {string} [opts.table]     filter to one table (`?table=`)
+ * @param {number} [opts.fromSeq]   start strictly after this offset (`?from_seq=`)
+ * @param {string} [opts.lastEventId] SSE reconnect cursor (wins over fromSeq)
+ * @param {(evt:{seq:number,xid:number,table_name:string,op:string,payload:object})=>void} opts.onEvent
+ * @param {(err:Error)=>void} [opts.onError]
+ * @param {()=>void} [opts.onOpen]
+ * @returns {{close:()=>void}} handle — call close() to abort the stream
+ */
+export function openEventStream({
+  table,
+  fromSeq,
+  lastEventId,
+  onEvent,
+  onError,
+  onOpen,
+} = {}) {
+  const controller = new AbortController();
+
+  const qs = new URLSearchParams();
+  if (table) qs.set('table', table);
+  if (fromSeq != null) qs.set('from_seq', String(fromSeq));
+  const query = qs.toString();
+
+  const headers = authHeaders({ Accept: 'text/event-stream' });
+  if (lastEventId != null) headers['Last-Event-ID'] = String(lastEventId);
+
+  (async () => {
+    let res;
+    try {
+      res = await fetch(`${BASE_URL}/events/subscribe${query ? `?${query}` : ''}`, {
+        headers,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (!controller.signal.aborted) onError?.(transportError(err));
+      return;
+    }
+    if (!res.ok) {
+      onError?.(await toApiError(res));
+      return;
+    }
+    onOpen?.();
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frames are separated by a blank line.
+        let sep;
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const parsed = parseSseFrame(frame);
+          if (parsed?.data) {
+            try {
+              onEvent?.(JSON.parse(parsed.data));
+            } catch {
+              /* heartbeat/comment frame with non-JSON data — ignore */
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) onError?.(transportError(err));
+    }
+  })();
+
+  return { close: () => controller.abort() };
+}
+
+// Parse one SSE frame (lines of `field: value`) into { id, event, data }.
+// Comment lines (starting `:`) are heartbeats and yield no data.
+function parseSseFrame(frame) {
+  const out = { id: null, event: null, data: '' };
+  const dataLines = [];
+  for (const line of frame.split('\n')) {
+    if (!line || line.startsWith(':')) continue; // heartbeat/comment
+    const idx = line.indexOf(':');
+    const field = idx === -1 ? line : line.slice(0, idx);
+    const value = idx === -1 ? '' : line.slice(idx + 1).replace(/^ /, '');
+    if (field === 'id') out.id = value;
+    else if (field === 'event') out.event = value;
+    else if (field === 'data') dataLines.push(value);
+  }
+  out.data = dataLines.join('\n');
+  return out;
+}
