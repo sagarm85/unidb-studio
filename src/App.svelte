@@ -8,10 +8,14 @@
   import SchemaVisualizer from './lib/SchemaVisualizer.svelte';
   import TableBuilder from './lib/TableBuilder.svelte';
   import TableActions from './lib/TableActions.svelte';
+  import ObservabilityPanel from './lib/ObservabilityPanel.svelte';
+  import LogsPanel from './lib/LogsPanel.svelte';
+  import EventsPanel from './lib/EventsPanel.svelte';
   import { runSql } from './lib/api.js';
   import { quoteIdent } from './lib/format.js';
 
-  let tab = $state('sql'); // 'sql' | 'records' | 'schema' | 'csv'
+  // 'sql' | 'records' | 'schema' | 'csv' | 'events' | 'observability' | 'logs'
+  let tab = $state('sql');
   let selectedTable = $state(null);
   let sql = $state('SELECT 1;');
   let paramsText = $state('');
@@ -147,6 +151,9 @@
         </button>
         <button class:active={tab === 'schema'} onclick={() => (tab = 'schema')}>Schema</button>
         <button class:active={tab === 'csv'} onclick={() => (tab = 'csv')}>CSV import</button>
+        <button class:active={tab === 'events'} onclick={() => (tab = 'events')}>Events</button>
+        <button class:active={tab === 'observability'} onclick={() => (tab = 'observability')}>Observability</button>
+        <button class:active={tab === 'logs'} onclick={() => (tab = 'logs')}>Logs</button>
       </nav>
 
       <section class="panel">
@@ -170,6 +177,12 @@
           <SchemaVisualizer {tables} />
         {:else if tab === 'csv'}
           <CsvUpload {tables} />
+        {:else if tab === 'events'}
+          <EventsPanel {tables} />
+        {:else if tab === 'observability'}
+          <ObservabilityPanel />
+        {:else if tab === 'logs'}
+          <LogsPanel />
         {/if}
       </section>
     </main>

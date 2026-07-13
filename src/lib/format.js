@@ -123,3 +123,30 @@ export function quoteIdent(name) {
   if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return s;
   return `"${s.replace(/"/g, '""')}"`;
 }
+
+// Microseconds → a compact human duration. The engine reports latencies in µs
+// (statement_latency, wal_fsync_latency, lock wait). Percentiles are log-bucket
+// upper-bound estimates, so exactness isn't the point — legibility is.
+export function formatMicros(us) {
+  if (us == null || Number.isNaN(us)) return '—';
+  if (us < 1000) return `${Math.round(us)} µs`;
+  if (us < 1_000_000) return `${(us / 1000).toFixed(us < 10_000 ? 1 : 0)} ms`;
+  return `${(us / 1_000_000).toFixed(2)} s`;
+}
+
+// Compact integer with thousands separators (counts: commits, hits, rows).
+export function formatCount(n) {
+  if (n == null || Number.isNaN(n)) return '—';
+  return Number(n).toLocaleString();
+}
+
+// Seconds → "3m 12s" style, for the horizon-age gauge.
+export function formatDuration(secs) {
+  if (secs == null || Number.isNaN(secs)) return '—';
+  const s = Math.floor(secs);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
