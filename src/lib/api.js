@@ -130,6 +130,53 @@ export async function getTables() {
   return { tables, supported: true };
 }
 
+/**
+ * GET /schema — full-database schema for the visualizer: every table's columns
+ * PLUS primary keys and foreign-key relationships (which `/tables` does not
+ * carry). This route is PROPOSED and not yet implemented in the engine, so:
+ *   - 200  -> use the server payload as-is ({ supported: true, inferred: false }).
+ *   - 404  -> not built yet; signal callers to fall back to inference/demo data.
+ *
+ * Proposed response contract (see the schema-endpoint doc):
+ *   {
+ *     "tables": [
+ *       { "name": "users",
+ *         "columns": [
+ *           { "name": "id", "type": "INT", "nullable": false,
+ *             "index": true, "primaryKey": true }
+ *         ],
+ *         "primaryKey": ["id"] }
+ *     ],
+ *     "relationships": [
+ *       { "name": "orders_user_id_fkey",
+ *         "fromTable": "orders", "fromColumns": ["user_id"],
+ *         "toTable": "users",   "toColumns": ["id"] }
+ *     ]
+ *   }
+ *
+ * @returns {Promise<{tables: Array, relationships: Array, supported: boolean}>}
+ */
+export async function getSchema() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/schema`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+
+  if (res.status === 404) return { tables: [], relationships: [], supported: false };
+  if (!res.ok) throw await toApiError(res);
+
+  const data = await res.json();
+  return {
+    tables: data?.tables ?? [],
+    relationships: data?.relationships ?? [],
+    supported: true,
+  };
+}
+
 // EXPLAIN ANALYZE returns a `rows` result: one single-string column per plan
 // line, with a trailing `execution_time_ms=<n>` line under ANALYZE. Pull that
 // number out — it's the true SERVER execution time, distinct from round-trip.
