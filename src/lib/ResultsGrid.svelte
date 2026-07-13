@@ -251,7 +251,7 @@
      JSON) can't blow out the grid — the full value is in the title + clipboard. */
   td {
     position: relative;
-    cursor: copy;
+    cursor: default;
   }
   td.null {
     color: var(--muted);

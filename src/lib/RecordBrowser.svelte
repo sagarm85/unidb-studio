@@ -278,15 +278,22 @@
     }
   }
 
-  // Per-row delete -> DELETE FROM <t> WHERE <pk> = <pkval>.
-  async function handleRowDelete(row) {
+  // Per-row delete — shows an in-app confirmation modal instead of window.confirm.
+  let deleteConfirm = $state(null); // { row, pkVal } when pending
+
+  function requestRowDelete(row) {
     if (!canEdit || !pkCol) return;
-    const pkVal = row[colNames.indexOf(pkCol)];
-    if (!confirm(`Delete row where ${pkCol} = ${pkVal}?`)) return;
+    deleteConfirm = { row, pkVal: row[colNames.indexOf(pkCol)] };
+  }
+
+  async function confirmRowDelete() {
+    if (!deleteConfirm) return;
+    const { row } = deleteConfirm;
+    deleteConfirm = null;
     error = null;
     try {
       const params = [];
-      const pkSlot = slot(bindForColumn(columnMeta.get(pkCol)?.type, String(pkVal)), params);
+      const pkSlot = slot(bindForColumn(columnMeta.get(pkCol)?.type, String(row[colNames.indexOf(pkCol)])), params);
       await runSql(`DELETE FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(pkCol)} = ${pkSlot}`, params);
       await reloadCurrent();
       fetchCount();
@@ -602,7 +609,7 @@
       rowActionIcon="≈"
       rowActionTitle="Find similar rows (vector NEAR search)"
       onCellEdit={canEdit && !simMode ? handleCellEdit : null}
-      onRowDelete={canEdit && !simMode ? handleRowDelete : null}
+      onRowDelete={canEdit && !simMode ? requestRowDelete : null}
       onSort={simMode ? null : handleSort}
       {sortState}
       {headerMeta}
@@ -644,6 +651,29 @@
           <span class="hint">Blank = {'{'}default if any, else NULL{'}'}. Vectors/JSON as JSON, e.g. [0.1, 0.2].</span>
           <button class="ghost" onclick={() => (showInsert = false)}>Cancel</button>
           <button onclick={submitInsert} disabled={loading}>Insert</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if deleteConfirm}
+    <div class="modal-backdrop" role="presentation" onpointerdown={() => (deleteConfirm = null)}>
+      <div class="modal del-modal" role="dialog" aria-label="Confirm delete" onpointerdown={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <strong>Delete row</strong>
+          <button class="icon" title="Close" onclick={() => (deleteConfirm = null)}>✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="del-msg">
+            This will permanently delete the row where
+            <code>{pkCol} = {deleteConfirm.pkVal}</code>
+            from <strong>{table?.name}</strong>. This cannot be undone.
+          </p>
+        </div>
+        <div class="modal-foot">
+          <span class="grow"></span>
+          <button class="ghost" onclick={() => (deleteConfirm = null)}>Cancel</button>
+          <button class="del-btn" onclick={confirmRowDelete} disabled={loading}>Delete</button>
         </div>
       </div>
     </div>
@@ -1002,4 +1032,34 @@
     font-size: 11px;
     color: var(--muted);
   }
+  .modal-foot .grow { flex: 1; }
+
+  /* delete confirmation modal */
+  .del-modal { width: min(400px, 100%); }
+  .del-msg {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .del-msg code {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    background: var(--panel-alt);
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  .del-btn {
+    background: var(--err-fg, #ef4444);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .del-btn:hover   { opacity: 0.88; }
+  .del-btn:disabled { opacity: 0.5; cursor: default; }
 </style>

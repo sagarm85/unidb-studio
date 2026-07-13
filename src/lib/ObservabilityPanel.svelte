@@ -1,24 +1,45 @@
 <script>
-  // Observability tab (item 21). Polls GET /stats and renders the widget set
-  // from the engine_access_guide §9 traceability table — every panel maps to a
-  // documented EngineStats field; no bespoke endpoint. Read-only.
   import { getStats } from './api.js';
   import { formatMicros, formatCount, formatDuration } from './format.js';
   import ErrorBox from './ErrorBox.svelte';
+  import MetricChart from './MetricChart.svelte';
 
-  const REFRESH_MS = 3000;
+  const REFRESH_MS = 5000;
+  const MAX_HISTORY = 60; // 5 min at 5s intervals
 
-  let stats = $state(null);
+  let stats     = $state(null);
   let supported = $state(true);
-  let error = $state(null);
-  let loading = $state(true);
-  let live = $state(true); // auto-refresh toggle
+  let error     = $state(null);
+  let loading   = $state(true);
+  let live      = $state(true);
+  let subTab    = $state('overview'); // 'overview' | 'queries'
+
+  // Accumulated time-series: array of { t, commits, activeTxns, hitRatio, walBytes }
+  let history = $state([]);
+  let prevCommits  = null;
+  let prevWalBytes = null;
 
   async function load() {
     try {
       const out = await getStats();
       supported = out.supported;
-      if (out.supported) stats = out.stats;
+      if (out.supported) {
+        stats = out.stats;
+        const now = Date.now();
+        const commits  = stats.commits  ?? 0;
+        const walBytes = stats.wal_bytes ?? 0;
+        const point = {
+          t:          now,
+          activeTxns: stats.active_transactions ?? 0,
+          hitRatio:   stats.bufferpool?.hit_ratio != null ? stats.bufferpool.hit_ratio * 100 : null,
+          commitsPerSec:  prevCommits  != null ? Math.max(0, (commits  - prevCommits)  / (REFRESH_MS / 1000)) : null,
+          walBytesPerSec: prevWalBytes != null ? Math.max(0, (walBytes - prevWalBytes) / (REFRESH_MS / 1000)) : null,
+          lockWaits:  stats.locks?.waits ?? 0,
+        };
+        prevCommits  = commits;
+        prevWalBytes = walBytes;
+        history = [...history.slice(-(MAX_HISTORY - 1)), point];
+      }
       error = null;
     } catch (e) {
       error = { code: e.code, message: e.message, status: e.status };
@@ -34,33 +55,67 @@
     return () => clearInterval(id);
   });
 
-  // Derived views over the snapshot (guarded — a pre-item-21 server may omit
-  // the enriched blocks even while /stats itself exists).
-  const kinds = ['insert', 'update', 'delete', 'select'];
+  const kinds   = ['select', 'insert', 'update', 'delete'];
   const latency = $derived(stats?.statement_latency ?? {});
-  const bp = $derived(stats?.bufferpool ?? null);
-  const locks = $derived(stats?.locks ?? null);
-  const fsync = $derived(stats?.wal_fsync_latency ?? null);
+  const bp      = $derived(stats?.bufferpool ?? null);
+  const locks   = $derived(stats?.locks ?? null);
+  const fsync   = $derived(stats?.wal_fsync_latency ?? null);
   const workers = $derived(stats?.parallel_workers ?? null);
-  const tables = $derived(stats?.tables ?? []);
+  const tables  = $derived(stats?.tables ?? []);
   const horizon = $derived(stats?.horizon_age_secs ?? null);
-  // The horizon-age gauge is the one to alert on: a pinned vacuum horizon is the
-  // #1 silent bloat cause (item-16 postmortem). Warn as it climbs.
+
   const horizonLevel = $derived(
     horizon == null ? 'ok' : horizon >= 300 ? 'bad' : horizon >= 30 ? 'warn' : 'ok',
   );
-  const hitRatio = $derived(bp?.hit_ratio != null ? `${(bp.hit_ratio * 100).toFixed(1)}%` : '—');
+  const hitRatio = $derived(
+    bp?.hit_ratio != null ? `${(bp.hit_ratio * 100).toFixed(1)}%` : '—'
+  );
+  const totalQueries = $derived(
+    kinds.reduce((s, k) => s + (latency[k]?.count ?? 0), 0)
+  );
+  const slowCount = $derived(stats?.recent_slow_queries?.length ?? 0);
+
+  // ── Series helpers ────────────────────────────────────────
+  function toSeries(key) {
+    return history.map(p => ({ t: p.t, v: p[key] ?? null }));
+  }
+
+  function fmtRate(v) {
+    if (v == null) return '—';
+    if (v >= 1000) return `${(v / 1000).toFixed(1)}k/s`;
+    return `${v.toFixed(1)}/s`;
+  }
+  function fmtBytes(v) {
+    if (v == null) return '—';
+    if (v >= 1_048_576) return `${(v / 1_048_576).toFixed(1)} MB/s`;
+    if (v >= 1024) return `${(v / 1024).toFixed(1)} KB/s`;
+    return `${v.toFixed(0)} B/s`;
+  }
+  function fmtPct(v) {
+    if (v == null) return '—';
+    return `${v.toFixed(1)}%`;
+  }
 </script>
 
 <div class="obs">
+  <!-- Header bar -->
   <div class="toolbar">
-    <h3>Observability</h3>
-    <div class="spacer"></div>
-    <label class="live">
+    <div class="subtabs">
+      <button class:active={subTab === 'overview'} onclick={() => (subTab = 'overview')}>Overview</button>
+      <button class:active={subTab === 'queries'}  onclick={() => (subTab = 'queries')}>Query Performance</button>
+    </div>
+    <span class="spacer"></span>
+    <label class="live-toggle">
       <input type="checkbox" bind:checked={live} />
-      Auto-refresh ({REFRESH_MS / 1000}s)
+      Live ({REFRESH_MS / 1000}s)
     </label>
-    <button class="link" onclick={load}>Refresh now</button>
+    <button class="refresh-btn" onclick={load} title="Refresh now">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5c1.8 0 3.4.87 4.4 2.2"/>
+        <polyline points="10 2 13 5 10.5 7.5"/>
+      </svg>
+      Refresh
+    </button>
   </div>
 
   {#if error}
@@ -70,157 +125,227 @@
   {#if !supported}
     <p class="muted">
       This server doesn't expose <code>GET /stats</code>. Rebuild
-      <code>unidb-server</code> from a build that includes item&nbsp;21 (observability metrics).
+      <code>unidb-server</code> from a build that includes observability metrics.
     </p>
   {:else if loading && !stats}
     <p class="muted">Loading metrics…</p>
   {:else if stats}
-    <!-- Horizon-age gauge — the alertable one, first and prominent. -->
-    <div class="gauge {horizonLevel}">
-      <div class="gauge-label">Vacuum-horizon age</div>
-      <div class="gauge-value">{formatDuration(horizon)}</div>
-      <div class="gauge-note">
-        {#if horizonLevel === 'bad'}
-          A snapshot has been pinned &gt;5m — likely an idle <code>REPEATABLE READ</code> session or
-          abandoned transaction. #1 silent cause of bloat &amp; scan slowdown.
-        {:else if horizonLevel === 'warn'}
-          Oldest live snapshot is aging. Resets to 0 the instant it commits/aborts.
-        {:else}
-          No long-lived snapshot pinning the vacuum horizon.
+
+    <!-- ── OVERVIEW ────────────────────────────────────────── -->
+    {#if subTab === 'overview'}
+
+      <!-- KPI summary cards -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <span class="kpi-label">Total queries</span>
+          <span class="kpi-val">{formatCount(totalQueries)}</span>
+        </div>
+        <div class="kpi {slowCount > 0 ? 'warn' : ''}">
+          <span class="kpi-label">Slow queries</span>
+          <span class="kpi-val">{slowCount}</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Cache hit rate</span>
+          <span class="kpi-val accent">{hitRatio}</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Active txns</span>
+          <span class="kpi-val">{formatCount(stats.active_transactions)}</span>
+        </div>
+        <div class="kpi {locks?.deadlocks > 0 ? 'bad' : ''}">
+          <span class="kpi-label">Deadlocks</span>
+          <span class="kpi-val">{formatCount(locks?.deadlocks)}</span>
+        </div>
+        <div class="kpi {horizonLevel}">
+          <span class="kpi-label">Vacuum horizon</span>
+          <span class="kpi-val">{formatDuration(horizon)}</span>
+        </div>
+      </div>
+
+      <!-- Time-series charts -->
+      <div class="chart-grid">
+        <MetricChart
+          points={toSeries('activeTxns')}
+          label="Active transactions"
+          unit="count"
+          color="#2563eb"
+          fmt={(v) => v?.toFixed(0) ?? '—'}
+        />
+        <MetricChart
+          points={toSeries('hitRatio')}
+          label="Cache hit rate"
+          unit="%"
+          color="#16a34a"
+          fmt={fmtPct}
+        />
+        <MetricChart
+          points={toSeries('commitsPerSec')}
+          label="Commits / sec"
+          unit="txn/s"
+          color="#7c3aed"
+          fmt={fmtRate}
+        />
+        <MetricChart
+          points={toSeries('walBytesPerSec')}
+          label="WAL throughput"
+          unit="bytes/s"
+          color="#b45309"
+          fmt={fmtBytes}
+        />
+      </div>
+
+      <!-- Card grid -->
+      <div class="card-grid">
+        <!-- Throughput -->
+        <section class="card">
+          <h4>Throughput</h4>
+          <dl>
+            <dt>Commits</dt>       <dd>{formatCount(stats.commits)}</dd>
+            <dt>Aborts</dt>        <dd>{formatCount(stats.aborts)}</dd>
+            <dt>Checkpoints</dt>   <dd>{formatCount(stats.checkpoints)}</dd>
+            <dt>Autovacuums</dt>   <dd>{formatCount(stats.autovacuums)}</dd>
+          </dl>
+        </section>
+
+        <!-- Sessions -->
+        <section class="card">
+          <h4>Sessions</h4>
+          <dl>
+            <dt>Open txn sessions</dt>   <dd>{formatCount(stats.open_txn_sessions)}</dd>
+            <dt>Open cursors</dt>        <dd>{formatCount(stats.open_cursors)}</dd>
+            <dt>Idle-reaper aborts</dt>  <dd>{formatCount(stats.idle_reaper_aborts)}</dd>
+          </dl>
+        </section>
+
+        <!-- Buffer pool -->
+        {#if bp}
+          <section class="card">
+            <h4>Buffer pool</h4>
+            <dl>
+              <dt>Hit ratio</dt>   <dd class="accent strong">{hitRatio}</dd>
+              <dt>Hits</dt>        <dd>{formatCount(bp.hits)}</dd>
+              <dt>Misses</dt>      <dd>{formatCount(bp.misses)}</dd>
+              <dt>Evictions</dt>   <dd>{formatCount(bp.evictions)}</dd>
+            </dl>
+          </section>
+        {/if}
+
+        <!-- Contention -->
+        {#if locks}
+          <section class="card">
+            <h4>Contention</h4>
+            <dl>
+              <dt>Lock waits</dt>  <dd>{formatCount(locks.waits)}</dd>
+              <dt>Deadlocks</dt>   <dd class:danger={locks.deadlocks > 0}>{formatCount(locks.deadlocks)}</dd>
+              <dt>Wait p50</dt>    <dd>{formatMicros(locks.wait?.p50_us)}</dd>
+              <dt>Wait p99</dt>    <dd>{formatMicros(locks.wait?.p99_us)}</dd>
+            </dl>
+          </section>
+        {/if}
+
+        <!-- WAL -->
+        <section class="card">
+          <h4>WAL / Durability</h4>
+          <dl>
+            <dt>fsyncs</dt>       <dd>{formatCount(stats.wal_fsyncs)}</dd>
+            <dt>fsync p50</dt>    <dd>{formatMicros(fsync?.p50_us)}</dd>
+            <dt>fsync p99</dt>    <dd>{formatMicros(fsync?.p99_us)}</dd>
+            <dt>WAL bytes</dt>    <dd>{formatCount(stats.wal_bytes)}</dd>
+          </dl>
+        </section>
+
+        <!-- Workers -->
+        {#if workers}
+          <section class="card">
+            <h4>Parallel workers</h4>
+            <dl>
+              <dt>Budget</dt>           <dd>{formatCount(workers.global_max)}</dd>
+              <dt>Available</dt>        <dd>{formatCount(workers.available)}</dd>
+              <dt>Active scans</dt>     <dd>{formatCount(workers.parallel_scans)}</dd>
+              <dt>Serial fallbacks</dt> <dd>{formatCount(workers.serial_fallbacks)}</dd>
+            </dl>
+          </section>
         {/if}
       </div>
-    </div>
 
-    <div class="grid">
-      <!-- Throughput -->
-      <section class="card">
-        <h4>Throughput</h4>
-        <dl>
-          <dt>Commits</dt><dd>{formatCount(stats.commits)}</dd>
-          <dt>Aborts</dt><dd>{formatCount(stats.aborts)}</dd>
-          <dt>Active txns</dt><dd>{formatCount(stats.active_transactions)}</dd>
-          <dt>Checkpoints</dt><dd>{formatCount(stats.checkpoints)}</dd>
-        </dl>
-      </section>
-
-      <!-- Durability cost -->
-      <section class="card">
-        <h4>Durability cost</h4>
-        <dl>
-          <dt>WAL fsyncs</dt><dd>{formatCount(stats.wal_fsyncs)}</dd>
-          <dt>fsync p50</dt><dd>{formatMicros(fsync?.p50_us)}</dd>
-          <dt>fsync p99</dt><dd>{formatMicros(fsync?.p99_us)}</dd>
-          <dt>WAL bytes</dt><dd>{formatCount(stats.wal_bytes)}</dd>
-        </dl>
-      </section>
-
-      <!-- Cache efficiency -->
-      {#if bp}
-        <section class="card">
-          <h4>Cache efficiency</h4>
-          <dl>
-            <dt>Hit ratio</dt><dd class="strong">{hitRatio}</dd>
-            <dt>Hits</dt><dd>{formatCount(bp.hits)}</dd>
-            <dt>Misses</dt><dd>{formatCount(bp.misses)}</dd>
-            <dt>Evictions</dt><dd>{formatCount(bp.evictions)}</dd>
-          </dl>
-        </section>
-      {/if}
-
-      <!-- Contention -->
-      {#if locks}
-        <section class="card">
-          <h4>Contention</h4>
-          <dl>
-            <dt>Lock waits</dt><dd>{formatCount(locks.waits)}</dd>
-            <dt>Deadlocks</dt><dd class:danger={locks.deadlocks > 0}>{formatCount(locks.deadlocks)}</dd>
-            <dt>Wait p50</dt><dd>{formatMicros(locks.wait?.p50_us)}</dd>
-            <dt>Wait p99</dt><dd>{formatMicros(locks.wait?.p99_us)}</dd>
-          </dl>
-        </section>
-      {/if}
-
-      <!-- Worker governance -->
-      {#if workers}
-        <section class="card">
-          <h4>Parallel workers</h4>
-          <dl>
-            <dt>Budget</dt><dd>{formatCount(workers.global_max)}</dd>
-            <dt>Available</dt><dd>{formatCount(workers.available)}</dd>
-            <dt>Active scans</dt><dd>{formatCount(workers.parallel_scans)}</dd>
-            <dt>Serial fallbacks</dt><dd>{formatCount(workers.serial_fallbacks)}</dd>
-          </dl>
-        </section>
-      {/if}
-
-      <!-- Server sessions -->
-      <section class="card">
-        <h4>Server sessions</h4>
-        <dl>
-          <dt>Open txn sessions</dt><dd>{formatCount(stats.open_txn_sessions)}</dd>
-          <dt>Open cursors</dt><dd>{formatCount(stats.open_cursors)}</dd>
-          <dt>Idle-reaper aborts</dt><dd>{formatCount(stats.idle_reaper_aborts)}</dd>
-          <dt>Autovacuums</dt><dd>{formatCount(stats.autovacuums)}</dd>
-        </dl>
-      </section>
-    </div>
-
-    <!-- Query latency by statement kind -->
-    <section class="card wide">
-      <h4>Query latency by kind <span class="hint">p50/p99 are log-bucket upper-bound estimates</span></h4>
-      <table>
-        <thead>
-          <tr><th>Kind</th><th>Count</th><th>p50</th><th>p99</th><th>Mean</th></tr>
-        </thead>
-        <tbody>
-          {#each kinds as k}
-            <tr>
-              <td class="mono">{k}</td>
-              <td>{formatCount(latency[k]?.count)}</td>
-              <td>{formatMicros(latency[k]?.p50_us)}</td>
-              <td>{formatMicros(latency[k]?.p99_us)}</td>
-              <td>{formatMicros(latency[k]?.mean_us)}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </section>
-
-    <!-- Table health -->
-    <section class="card wide">
-      <h4>
-        Table health
-        <span class="hint">
-          dead/live estimates are engine-wide (per-table split is a filed follow-up):
-          dead ≈ {formatCount(stats.dead_tuple_estimate)}, live ≈ {formatCount(stats.live_tuple_estimate)}
-        </span>
-      </h4>
+      <!-- Table health -->
       {#if tables.length}
-        <table>
-          <thead><tr><th>Table</th><th>Pages</th></tr></thead>
-          <tbody>
-            {#each tables as t}
-              <tr><td class="mono">{t.name}</td><td>{formatCount(t.pages)}</td></tr>
-            {/each}
-          </tbody>
-        </table>
-      {:else}
-        <p class="muted">No user tables reported.</p>
+        <section class="card wide">
+          <h4>Table health
+            <span class="hint">
+              dead ≈ {formatCount(stats.dead_tuple_estimate)} · live ≈ {formatCount(stats.live_tuple_estimate)}
+            </span>
+          </h4>
+          <table>
+            <thead><tr><th>Table</th><th>Pages</th></tr></thead>
+            <tbody>
+              {#each tables as t}
+                <tr><td class="mono">{t.name}</td><td class="mono">{formatCount(t.pages)}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </section>
       {/if}
-    </section>
 
-    {#if stats.recent_slow_queries?.length}
+    <!-- ── QUERY PERFORMANCE ──────────────────────────────── -->
+    {:else}
+
+      <!-- Statement latency summary -->
       <section class="card wide">
-        <h4>Recent slow queries</h4>
-        <table>
-          <thead><tr><th>SQL</th><th>Time</th></tr></thead>
+        <h4>Statement latency <span class="hint">p50/p99 are log-bucket estimates</span></h4>
+        <table class="perf-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th class="num">Calls</th>
+              <th class="num">Mean</th>
+              <th class="num">p50</th>
+              <th class="num">p99</th>
+            </tr>
+          </thead>
           <tbody>
-            {#each stats.recent_slow_queries as sq}
-              <tr><td class="mono sql">{sq.sql}</td><td>{formatMicros(sq.micros)}</td></tr>
+            {#each kinds as k}
+              {@const row = latency[k] ?? {}}
+              <tr>
+                <td><span class="kind-chip {k}">{k}</span></td>
+                <td class="num mono">{formatCount(row.count)}</td>
+                <td class="num mono">{formatMicros(row.mean_us)}</td>
+                <td class="num mono">{formatMicros(row.p50_us)}</td>
+                <td class="num mono">{formatMicros(row.p99_us)}</td>
+              </tr>
             {/each}
           </tbody>
         </table>
       </section>
+
+      <!-- Slow queries -->
+      <section class="card wide">
+        <h4>
+          Recent slow queries
+          {#if slowCount > 0}<span class="badge-count">{slowCount}</span>{/if}
+        </h4>
+        {#if stats.recent_slow_queries?.length}
+          <table class="perf-table">
+            <thead>
+              <tr>
+                <th>Query</th>
+                <th class="num" style="width:110px">Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each stats.recent_slow_queries as sq}
+                <tr>
+                  <td class="mono sql" title={sq.sql}>{sq.sql}</td>
+                  <td class="num mono">{formatMicros(sq.micros)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="muted no-slow">No slow queries recorded.</p>
+        {/if}
+      </section>
+
     {/if}
   {/if}
 </div>
@@ -229,78 +354,111 @@
   .obs {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
+    padding-bottom: 24px;
   }
+
+  /* ── toolbar ── */
   .toolbar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
-  .toolbar h3 {
-    margin: 0;
-    font-size: 15px;
-  }
-  .spacer {
-    flex: 1;
-  }
-  .live {
+  .subtabs {
     display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .muted {
-    color: var(--muted);
-    font-size: 13px;
-  }
-  .gauge {
+    background: var(--panel-alt);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 14px 16px;
-    background: var(--panel-alt);
+    padding: 3px;
+    gap: 2px;
   }
-  .gauge.warn {
-    border-color: #d99922;
-    background: rgba(210, 153, 34, 0.1);
+  .subtabs button {
+    background: none;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+    font-weight: 500;
   }
-  .gauge.bad {
-    border-color: var(--err-border);
-    background: var(--err-bg);
+  .subtabs button.active {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   }
-  .gauge-label {
+  .spacer { flex: 1; }
+  .live-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     font-size: 12px;
     color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    cursor: pointer;
   }
-  .gauge-value {
-    font-size: 28px;
+  .refresh-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .refresh-btn:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ── KPI row ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+  }
+  .kpi {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .kpi.warn { border-color: #d99922; background: rgba(210,153,34,0.06); }
+  .kpi.bad  { border-color: var(--err-border); background: var(--err-bg); }
+  .kpi-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .kpi-val {
+    font-size: 26px;
     font-weight: 700;
     font-family: var(--mono);
-    margin: 2px 0 4px;
+    line-height: 1;
   }
-  .gauge-note {
-    font-size: 12px;
-    color: var(--text);
-  }
-  .grid {
+  .kpi-val.accent { color: var(--accent); }
+
+  /* ── card grid ── */
+  .card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 12px;
   }
   .card {
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 14px;
+    border-radius: 10px;
+    padding: 14px 16px;
     background: var(--panel);
   }
-  .card.wide {
-    grid-column: 1 / -1;
-  }
+  .card.wide { grid-column: 1 / -1; }
   .card h4 {
-    margin: 0 0 8px;
+    margin: 0 0 10px;
     font-size: 13px;
+    font-weight: 600;
     display: flex;
     align-items: baseline;
     gap: 8px;
@@ -311,58 +469,79 @@
     font-weight: 400;
     color: var(--muted);
   }
+
+  /* ── dl ── */
   dl {
     display: grid;
     grid-template-columns: 1fr auto;
-    gap: 4px 10px;
+    gap: 5px 12px;
     margin: 0;
     font-size: 13px;
   }
-  dt {
-    color: var(--muted);
-  }
+  dt { color: var(--muted); }
   dd {
     margin: 0;
     font-family: var(--mono);
     text-align: right;
   }
-  dd.strong {
-    font-weight: 700;
-    color: var(--accent);
-  }
-  dd.danger {
-    color: var(--err-fg);
-    font-weight: 700;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
+  dd.accent.strong { font-weight: 700; color: var(--accent); }
+  dd.danger { color: var(--err-fg); font-weight: 700; }
+
+  /* ── tables ── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td {
     text-align: left;
-    padding: 5px 8px;
+    padding: 7px 10px;
     border-bottom: 1px solid var(--border);
   }
-  th {
-    color: var(--muted);
-    font-weight: 600;
-  }
-  td.mono, .mono {
-    font-family: var(--mono);
-  }
+  th { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-alt); }
+  .perf-table th.num,
+  .perf-table td.num { text-align: right; }
+  .mono { font-family: var(--mono); }
   td.sql {
     max-width: 640px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  button.link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0;
+
+  /* ── kind chips ── */
+  .kind-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .kind-chip.select { background: rgba(37,99,235,0.12);  color: #2563eb; }
+  .kind-chip.insert { background: rgba(22,163,74,0.12);  color: #16a34a; }
+  .kind-chip.update { background: rgba(202,138,4,0.12);  color: #b45309; }
+  .kind-chip.delete { background: rgba(220,38,38,0.12);  color: #dc2626; }
+
+  .badge-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: var(--err-fg);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .no-slow { margin: 4px 0; font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  /* ── time-series charts ── */
+  .chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 14px;
   }
 </style>

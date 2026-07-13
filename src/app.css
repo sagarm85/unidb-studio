@@ -51,8 +51,12 @@ body {
   height: 100%;
 }
 
-button {
+button,
+input,
+select,
+textarea {
   font-family: inherit;
+  font-size: inherit;
 }
 
 button:not(:disabled) {

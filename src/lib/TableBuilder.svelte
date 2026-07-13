@@ -7,9 +7,17 @@
   let { onSubmit, onClose } = $props();
 
   const TYPES = [
-    'INT', 'BIGINT', 'TEXT', 'BOOL', 'FLOAT', 'DOUBLE', 'DECIMAL(10,2)',
-    'TIMESTAMP', 'DATE', 'TIME', 'UUID', 'JSON', 'BYTEA', 'VECTOR(4)',
+    'INT', 'BIGINT', 'TEXT', 'BOOL',
+    'FLOAT', 'DOUBLE', 'DECIMAL(10,2)',
+    'TIMESTAMP', 'DATE', 'TIME',
+    'UUID', 'JSON', 'BYTEA', 'VECTOR(4)',
   ];
+
+  // Allow typing a custom type (e.g. VECTOR(128)) while keeping the select for common ones.
+  // When the user picks from the select, write it to c.type; freeform input also works.
+  function pickType(col, val) {
+    col.type = val;
+  }
 
   let name = $state('');
   let cols = $state([{ name: 'id', type: 'INT', notNull: true, pk: true }]);
@@ -74,10 +82,6 @@
         <input bind:value={name} placeholder="e.g. customers" spellcheck="false" />
       </label>
 
-      <datalist id="unidb-types">
-        {#each TYPES as t}<option value={t}></option>{/each}
-      </datalist>
-
       <div class="cols">
         <div class="colhdr">
           <span>Column</span><span>Type</span><span title="NOT NULL">NN</span><span title="Primary key">PK</span><span></span>
@@ -85,7 +89,24 @@
         {#each cols as c, i}
           <div class="colrow">
             <input bind:value={c.name} placeholder="name" spellcheck="false" />
-            <input bind:value={c.type} list="unidb-types" placeholder="type" spellcheck="false" />
+            <div class="type-cell">
+              <select
+                value={TYPES.includes(c.type) ? c.type : '__custom__'}
+                onchange={(e) => {
+                  if (e.target.value !== '__custom__') c.type = e.target.value;
+                }}
+              >
+                {#each TYPES as t}
+                  <option value={t}>{t}</option>
+                {/each}
+                {#if !TYPES.includes(c.type)}
+                  <option value="__custom__">{c.type}</option>
+                {/if}
+              </select>
+              {#if !TYPES.includes(c.type)}
+                <input class="custom-type" bind:value={c.type} placeholder="custom type" spellcheck="false" />
+              {/if}
+            </div>
             <input type="checkbox" bind:checked={c.notNull} aria-label="NOT NULL" />
             <input type="checkbox" bind:checked={c.pk} aria-label="Primary key" />
             <button class="x" title="Remove column" onclick={() => removeCol(i)}>✕</button>
@@ -176,6 +197,36 @@
     gap: 8px;
     align-items: center;
   }
+  /* type cell: select fills the column; custom-type input appears below it */
+  .type-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .type-cell select {
+    width: 100%;
+    padding: 6px 9px;
+    font-size: 13px;
+    font-family: var(--mono);
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    appearance: auto;
+  }
+  .type-cell select:focus { outline: none; border-color: var(--accent); }
+  .custom-type {
+    padding: 5px 8px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+  }
+  .custom-type:focus { outline: none; }
   .colhdr {
     font-size: 11px;
     color: var(--muted);

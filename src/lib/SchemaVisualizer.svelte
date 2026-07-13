@@ -294,7 +294,7 @@
                       {#if isAnn}<span class="ann" title="ANN (HNSW) index">ANN</span>{/if}
                     </span>
                     <span class="cname">{c.name}</span>
-                    <span class="ctype">{c.type ?? ''}{c.nullable === false ? '' : '?'}</span>
+                    <span class="ctype">{c.type ?? ''}</span>
                   </div>
                 {/each}
               </div>

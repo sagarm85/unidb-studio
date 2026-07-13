@@ -5,7 +5,7 @@
   // (Events, Vector search, Permissions, …) drop in the same way:
   //
   //   <CollapsibleSection title="events">…</CollapsibleSection>
-  let { title, open = true, action, children } = $props();
+  let { title, open = true, action, icon, children } = $props();
   let expanded = $state(open);
 </script>
 
@@ -17,7 +17,11 @@
       aria-expanded={expanded}
       title={expanded ? `Collapse ${title}` : `Expand ${title}`}
     >
-      <span class="chev" class:open={expanded} aria-hidden="true">▸</span>
+      {#if icon}
+        {@render icon()}
+      {:else}
+        <span class="chev" class:open={expanded} aria-hidden="true">▸</span>
+      {/if}
       <span class="sb-title">{title}</span>
     </button>
     {#if action}<span class="sb-action">{@render action()}</span>{/if}
