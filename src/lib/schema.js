@@ -1,14 +1,19 @@
 // Schema-graph helpers for the visualizer. Keeps derivation/layout logic out of
 // the component and out of api.js (which is strictly the wire contract).
 //
-// The engine's `/schema` route is not built yet (see api.getSchema). Until it
-// is, we synthesize a usable graph from the plain `/tables` catalog:
+// Preferred source is the engine's Milestone-18 system catalog: `getSchema()`
+// SELECTs `information_schema.*` / `unidb_catalog.*` and `buildCatalogSchema()`
+// (below) assembles REAL primary/foreign keys from it. There is NO `/schema`
+// route — the engine ships a queryable catalog, not app-shaped REST.
+//
+// The heuristics below are the FALLBACK for a pre-M18 server that lacks the
+// catalog, synthesizing a usable graph from the plain `/tables` list:
 //   - primary keys  <- an explicit `primaryKey` flag if present, else a column
 //                       named "id", else the first indexed column.
 //   - relationships <- HEURISTIC: a column like `user_id` / `userId` pointing at
 //                       a table `user`/`users` is treated as a foreign key to
-//                       that table's PK. This is a guess, flagged `inferred`, and
-//                       the real endpoint should replace it with true FK metadata.
+//                       that table's PK. A guess, flagged `inferred`; real FK
+//                       metadata from the catalog replaces it when available.
 
 // Detect the primary-key column name for a table from whatever hints exist.
 export function primaryKeyOf(table) {
@@ -62,6 +67,84 @@ export function inferRelationships(tables) {
   return rels;
 }
 
+// Assemble a schema graph from the engine's REAL system catalog
+// (Milestone 18). Inputs are the row-objects returned by SELECTing over
+//   information_schema.columns              -> colRows
+//   unidb_catalog.indexes                   -> idxRows
+//   information_schema.{table_constraints,   -> pkRows  (PRIMARY KEY columns)
+//                       key_column_usage}
+//   the 4-way FK join in the access guide    -> fkRows
+// Produces the same { tables, relationships } shape the visualizer consumes,
+// but with REAL primary/foreign keys — no name-heuristic guessing. Pure and
+// order-independent so it can be unit-tested off fixture rows.
+export function buildCatalogSchema(colRows = [], idxRows = [], pkRows = [], fkRows = []) {
+  const num = (x) => Number(x ?? 0);
+
+  // (table.column) -> index kind (btree/hnsw/fulltext/csr).
+  const indexByCol = new Map();
+  for (const r of idxRows) indexByCol.set(`${r.table_name}.${r.column_name}`, r.index_type);
+
+  // table -> ordered primary-key column names.
+  const pkByTable = new Map();
+  for (const r of pkRows) {
+    const arr = pkByTable.get(r.table_name) ?? [];
+    arr.push({ col: r.column_name, pos: num(r.ordinal_position) });
+    pkByTable.set(r.table_name, arr);
+  }
+  for (const [k, arr] of pkByTable) {
+    pkByTable.set(k, arr.sort((a, b) => a.pos - b.pos).map((x) => x.col));
+  }
+
+  // Group columns into tables, ordered by ordinal_position.
+  const sorted = [...colRows].sort(
+    (a, b) =>
+      String(a.table_name).localeCompare(String(b.table_name)) ||
+      num(a.ordinal_position) - num(b.ordinal_position),
+  );
+  const tableMap = new Map();
+  for (const r of sorted) {
+    let t = tableMap.get(r.table_name);
+    if (!t) {
+      t = { name: r.table_name, primaryKey: pkByTable.get(r.table_name) ?? [], columns: [] };
+      tableMap.set(r.table_name, t);
+    }
+    t.columns.push({
+      name: r.column_name,
+      type: r.data_type,
+      // is_nullable is 'YES'/'NO'; a PRIMARY KEY column is NOT NULL.
+      nullable: r.is_nullable !== 'NO',
+      index: indexByCol.get(`${r.table_name}.${r.column_name}`) ?? null,
+      primaryKey: t.primaryKey.includes(r.column_name),
+      default: r.column_default ?? null,
+    });
+  }
+  const tables = [...tableMap.values()];
+
+  // Group FK rows by constraint into one relationship per key (composite-aware).
+  const relMap = new Map();
+  for (const r of fkRows) {
+    let rel = relMap.get(r.constraint_name);
+    if (!rel) {
+      rel = { name: r.constraint_name, fromTable: r.from_table, toTable: r.to_table, cols: [] };
+      relMap.set(r.constraint_name, rel);
+    }
+    rel.cols.push({ from: r.from_col, to: r.to_col, pos: num(r.from_pos) });
+  }
+  const relationships = [...relMap.values()].map((rel) => {
+    const cols = rel.cols.sort((a, b) => a.pos - b.pos);
+    return {
+      name: rel.name,
+      fromTable: rel.fromTable,
+      fromColumns: cols.map((c) => c.from),
+      toTable: rel.toTable,
+      toColumns: cols.map((c) => c.to),
+      inferred: false,
+    };
+  });
+
+  return { tables, relationships };
+}
+
 // Small illustrative schema shown when the server exposes no tables at all, so
 // the visualizer is never blank. Clearly marked demo data in the UI.
 export const DEMO_SCHEMA = {
@@ -107,18 +190,32 @@ export const DEMO_SCHEMA = {
         { name: 'price', type: 'DECIMAL', nullable: false },
       ],
     },
+    {
+      name: 'documents',
+      primaryKey: ['id'],
+      columns: [
+        { name: 'id', type: 'INT', nullable: false, index: true, primaryKey: true },
+        { name: 'product_id', type: 'INT', nullable: false, index: true },
+        { name: 'title', type: 'TEXT', nullable: false },
+        // A vector column with the durable ANN (hnsw) index — drives the
+        // VEC/ANN badges and the `USING HNSW` DDL in demo mode.
+        { name: 'embedding', type: 'vector(4)', nullable: true, index: 'hnsw' },
+      ],
+    },
   ],
   relationships: [
     { name: 'orders_customer_id_fkey', fromTable: 'orders', fromColumns: ['customer_id'], toTable: 'customers', toColumns: ['id'] },
     { name: 'order_items_order_id_fkey', fromTable: 'order_items', fromColumns: ['order_id'], toTable: 'orders', toColumns: ['id'] },
     { name: 'order_items_product_id_fkey', fromTable: 'order_items', fromColumns: ['product_id'], toTable: 'products', toColumns: ['id'] },
+    { name: 'documents_product_id_fkey', fromTable: 'documents', fromColumns: ['product_id'], toTable: 'products', toColumns: ['id'] },
   ],
 };
 
-// Reconstruct a CREATE TABLE statement from introspected metadata. This is a
-// best-effort rebuild (types/nullability/PK/secondary indexes) — NOT the
-// engine's stored DDL. When `/schema` starts returning an authoritative `ddl`
-// string per table, prefer that; this stays as the fallback.
+// Reconstruct a CREATE TABLE statement from introspected metadata
+// (types/nullability/PK/secondary indexes). The engine retains no original
+// CREATE text and exposes no object_ddl, so this client-side rebuild is the
+// only source of DDL — canonical, not byte-identical (see the engine access
+// guide §4, "Object DDL — reconstruct from metadata").
 export function tableDDL(table) {
   const cols = table.columns ?? [];
   const pk = Array.isArray(table.primaryKey) && table.primaryKey.length
@@ -126,7 +223,8 @@ export function tableDDL(table) {
     : (primaryKeyOf(table) ? [primaryKeyOf(table)] : []);
 
   const lines = cols.map((c) => {
-    let line = `  ${c.name} ${c.type ?? ''}`.trimEnd();
+    // Uppercase the type token for DDL convention: vector(4) -> VECTOR(4).
+    let line = `  ${c.name} ${(c.type ?? '').toUpperCase()}`.trimEnd();
     if (c.nullable === false) line += ' NOT NULL';
     return line;
   });
@@ -135,9 +233,11 @@ export function tableDDL(table) {
   let ddl = `CREATE TABLE ${table.name} (\n${lines.join(',\n')}\n);`;
 
   // Secondary indexes: indexed columns that aren't (part of) the primary key.
+  // A vector column's ANN index needs the `USING HNSW` access-method clause.
   for (const c of cols) {
     if (c.index && !pk.includes(c.name)) {
-      ddl += `\nCREATE INDEX idx_${table.name}_${c.name} ON ${table.name} (${c.name});`;
+      const using = c.index === 'hnsw' ? ' USING HNSW' : '';
+      ddl += `\nCREATE INDEX idx_${table.name}_${c.name} ON ${table.name}${using} (${c.name});`;
     }
   }
   return ddl;

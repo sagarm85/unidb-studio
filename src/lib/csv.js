@@ -63,3 +63,30 @@ export function parseCsv(text) {
   const [headers, ...rows] = records;
   return { headers, rows };
 }
+
+// Serialize a result set to RFC-4180 CSV text. `columns` is the header row;
+// `rows` is an array of arrays (values align positionally with `columns`).
+// Objects/arrays (JSON, vectors) are JSON-stringified; NULL becomes empty.
+export function rowsToCsv(columns, rows) {
+  const cell = (v) => {
+    if (v === null || v === undefined) return '';
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [columns.map(cell).join(',')];
+  for (const row of rows) lines.push(columns.map((_, i) => cell(row[i])).join(','));
+  return lines.join('\r\n');
+}
+
+// Trigger a browser download of `text` as a file named `filename`.
+export function downloadText(filename, text, mime = 'text/csv') {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

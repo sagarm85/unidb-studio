@@ -10,6 +10,7 @@
     nodeHeight,
     NODE_WIDTH,
   } from './schema.js';
+  import { isVectorType } from './format.js';
   import ErrorBox from './ErrorBox.svelte';
 
   // App already fetched + filtered the catalog; reuse it as the fallback source
@@ -30,6 +31,7 @@
   let menu = $state(null); // { table, x, y }
   let ddlView = $state(null); // { table, sql }
   let copied = $state(false);
+  let modalEl = $state(null); // DDL modal element, for focus on open
 
   async function load() {
     loading = true;
@@ -153,8 +155,8 @@
   }
 
   // ---- kebab menu + DDL --------------------------------------------------
-  // A table's DDL: prefer an authoritative string from /schema, else rebuild it
-  // from the introspected columns.
+  // A table's DDL is always reconstructed from catalog metadata — the engine
+  // stores no CREATE text (the `table.ddl` guard is vestigial; no source sets it).
   function ddlFor(table) {
     return table.ddl ?? tableDDL(table);
   }
@@ -182,11 +184,30 @@
     menu = null;
   }
 
+  // Esc closes whichever overlay is open (kebab menu or DDL modal). Only
+  // listens while one is open, and is torn down when both close.
+  $effect(() => {
+    if (!menu && !ddlView) return;
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        menu = null;
+        ddlView = null;
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  // Move focus into the DDL modal when it opens (so Esc/Tab act on it).
+  $effect(() => {
+    if (ddlView && modalEl) modalEl.focus();
+  });
+
   const banner = $derived(
     schema.source === 'demo'
-      ? 'Demo schema — no tables found on the server. GET /schema is not implemented yet.'
+      ? 'Demo schema — the server reported no tables. This is illustrative sample data.'
       : schema.source === 'inferred'
-        ? 'Relationships inferred from column names (e.g. user_id → users.id). GET /schema is not implemented yet — real foreign keys will replace these guesses.'
+        ? 'Relationships inferred from column names (e.g. user_id → users.id) — the engine catalog (information_schema) isn’t available on this server. Real foreign keys replace these once it is.'
         : null,
   );
 </script>
@@ -263,10 +284,14 @@
                 {#each t.columns ?? [] as c}
                   {@const isPk = pkByTable.get(t.name) === c.name}
                   {@const isFk = fkCols.has(`${t.name}.${c.name}`)}
+                  {@const isVec = isVectorType(c.type)}
+                  {@const isAnn = c.index === 'hnsw'}
                   <div class="row" class:key={isPk || isFk}>
                     <span class="badge-slot">
                       {#if isPk}<span class="pk" title="primary key">PK</span>{/if}
                       {#if isFk}<span class="fk" title="foreign key">FK</span>{/if}
+                      {#if isVec}<span class="vec" title="vector column">VEC</span>{/if}
+                      {#if isAnn}<span class="ann" title="ANN (HNSW) index">ANN</span>{/if}
                     </span>
                     <span class="cname">{c.name}</span>
                     <span class="ctype">{c.type ?? ''}{c.nullable === false ? '' : '?'}</span>
@@ -293,7 +318,14 @@
 
   {#if ddlView}
     <div class="modal-backdrop" role="presentation" onpointerdown={() => (ddlView = null)}>
-      <div class="modal" role="dialog" aria-label="DDL for {ddlView.table}" onpointerdown={(e) => e.stopPropagation()}>
+      <div
+        class="modal"
+        role="dialog"
+        aria-label="DDL for {ddlView.table}"
+        tabindex="-1"
+        bind:this={modalEl}
+        onpointerdown={(e) => e.stopPropagation()}
+      >
         <div class="modal-head">
           <strong>{ddlView.table}</strong>
           <div class="modal-actions">
@@ -302,9 +334,9 @@
           </div>
         </div>
         <pre class="ddl">{ddlView.sql}</pre>
-        {#if schema.source !== 'server'}
-          <p class="ddl-note">Reconstructed from introspection — not the engine's stored DDL.</p>
-        {/if}
+        <p class="ddl-note">
+          Reconstructed from catalog metadata — canonical, not the original CREATE text (unidb stores no DDL).
+        </p>
       </div>
     </div>
   {/if}
@@ -509,11 +541,13 @@
   .badge-slot {
     display: inline-flex;
     gap: 3px;
-    width: 42px;
+    width: 58px;
     flex-shrink: 0;
   }
   .pk,
-  .fk {
+  .fk,
+  .vec,
+  .ann {
     font-size: 9px;
     font-weight: 700;
     padding: 1px 4px;
@@ -527,6 +561,14 @@
   .fk {
     background: rgba(37, 99, 235, 0.15);
     color: var(--accent);
+  }
+  .vec {
+    background: rgba(147, 51, 234, 0.16);
+    color: #9333ea;
+  }
+  .ann {
+    background: rgba(147, 51, 234, 0.9);
+    color: #fff;
   }
   .cname {
     flex: 1;
@@ -596,6 +638,9 @@
     border-radius: 10px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
     overflow: hidden;
+  }
+  .modal:focus {
+    outline: none;
   }
   .modal-head {
     display: flex;

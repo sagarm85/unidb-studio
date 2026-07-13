@@ -2,6 +2,8 @@
 // wire contract (../unidb/docs/REST_API.md). Components speak in terms of the
 // normalized shapes returned here, never raw fetch responses.
 
+import { buildCatalogSchema } from './schema.js';
+
 const ENV = import.meta.env ?? {};
 const RAW_URL = ENV.VITE_UNIDB_URL ?? '';
 
@@ -78,18 +80,23 @@ function transportError(err) {
  * @param {string} sql
  * @param {Array<*>} [params] positional $n bind values
  */
-export async function runSql(sql, params = []) {
+export async function runSql(sql, params = [], { txnId = null } = {}) {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
 
   const body = { sql };
   if (params && params.length) body.params = params;
+
+  // Inside a session, carry the X-Txn-Id header so the statement runs in that
+  // transaction (no auto-commit) instead of as a one-shot request.
+  const headers = authHeaders({ 'Content-Type': 'application/json' });
+  if (txnId != null) headers['X-Txn-Id'] = String(txnId);
 
   const start = performance.now();
   let res;
   try {
     res = await fetch(`${BASE_URL}/sql`, {
       method: 'POST',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      headers,
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -130,51 +137,169 @@ export async function getTables() {
   return { tables, supported: true };
 }
 
+// ---- server cursors (R4) -----------------------------------------------
+// Open a cursor over a single rows-producing statement (SELECT/CTE/EXPLAIN).
+// Returns { cursorId, columns, rowCount }. Page it with cursorPage / close it
+// with cursorClose. This bounds each response instead of one giant JSON array.
+export async function runSqlCursor(sql, params = []) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const body = { sql, cursor: true };
+  if (params && params.length) body.params = params;
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/sql`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const d = await res.json();
+  return { cursorId: d.cursor_id, columns: d.columns ?? [], rowCount: d.row_count ?? null };
+}
+
+/** Fetch one page of a cursor. Returns { columns, rows, done, remaining }. */
+export async function cursorPage(cursorId, limit = 200) {
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/sql/cursor/${cursorId}?limit=${limit}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const d = await res.json();
+  return { columns: d.columns ?? [], rows: d.rows ?? [], done: !!d.done, remaining: d.remaining ?? 0 };
+}
+
+/** Drop a cursor early. Best-effort (ignores errors). */
+export async function cursorClose(cursorId) {
+  try {
+    await fetch(`${BASE_URL}/sql/cursor/${cursorId}`, { method: 'DELETE', headers: authHeaders() });
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ---- transaction sessions (R1) -----------------------------------------
+async function txnPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: authHeaders(body ? { 'Content-Type': 'application/json' } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/** Begin a session transaction. Returns { txnId, isolation, expiresAt }. */
+export async function txnBegin(isolation = 'read_committed') {
+  const data = await txnPost('/txn/begin', { isolation });
+  return { txnId: data.txn_id ?? data.xid, isolation: data.isolation, expiresAt: data.expires_at };
+}
+/** Commit a session. Returns { txnId, state }. */
+export async function txnCommit(txnId) {
+  const data = await txnPost(`/txn/${txnId}/commit`, null);
+  return { txnId: data.txn_id, state: data.state };
+}
+/** Roll back a session. Returns { txnId, state }. */
+export async function txnRollback(txnId) {
+  const data = await txnPost(`/txn/${txnId}/rollback`, null);
+  return { txnId: data.txn_id, state: data.state };
+}
+
+// Run a single catalog SELECT and return its rows as array-of-objects, zipping
+// the result's `columns` names against each row's positional values.
+async function catalogRows(sql) {
+  const { results } = await runSql(sql);
+  const r = results.find((x) => x.type === 'rows') ?? { columns: [], rows: [] };
+  const cols = r.columns ?? [];
+  return (r.rows ?? []).map((row) => Object.fromEntries(cols.map((c, i) => [c, row[i]])));
+}
+
+// Error codes that mean "this server predates the Milestone 18 catalog" — the
+// introspection relations don't exist, so we degrade to inference/demo rather
+// than surfacing a hard error. Transport/auth failures still propagate.
+const CATALOG_ABSENT_CODES = new Set([
+  'TABLE_NOT_FOUND',
+  'SQL_UNSUPPORTED',
+  'SQL_PARSE_ERROR',
+  'HTTP_404',
+  'HTTP_400',
+]);
+
 /**
- * GET /schema — full-database schema for the visualizer: every table's columns
- * PLUS primary keys and foreign-key relationships (which `/tables` does not
- * carry). This route is PROPOSED and not yet implemented in the engine, so:
- *   - 200  -> use the server payload as-is ({ supported: true, inferred: false }).
- *   - 404  -> not built yet; signal callers to fall back to inference/demo data.
+ * Full-database schema for the visualizer — every table's columns PLUS real
+ * primary keys and foreign-key relationships. Sourced from the engine's
+ * Milestone-18 system catalog by SELECTing over `POST /sql` (there is NO
+ * `GET /schema` route by design — the engine ships a generic queryable catalog,
+ * not app-shaped REST). See `../unidb/docs/engine_access_guide.md` §4.
  *
- * Proposed response contract (see the schema-endpoint doc):
- *   {
- *     "tables": [
- *       { "name": "users",
- *         "columns": [
- *           { "name": "id", "type": "INT", "nullable": false,
- *             "index": true, "primaryKey": true }
- *         ],
- *         "primaryKey": ["id"] }
- *     ],
- *     "relationships": [
- *       { "name": "orders_user_id_fkey",
- *         "fromTable": "orders", "fromColumns": ["user_id"],
- *         "toTable": "users",   "toColumns": ["id"] }
- *     ]
- *   }
+ *   - catalog present -> { tables, relationships, supported: true } with REAL FKs.
+ *   - pre-M18 server  -> { supported: false }; caller falls back to inference/demo.
+ *
+ * `tables` matches the /tables shape (name, columns[{name,type,nullable,index,
+ * primaryKey}], primaryKey[]); `relationships` are real, composite-key aware.
  *
  * @returns {Promise<{tables: Array, relationships: Array, supported: boolean}>}
  */
 export async function getSchema() {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
 
-  let res;
+  // Probe with the columns query; its failure tells us the catalog is absent.
+  let colRows;
   try {
-    res = await fetch(`${BASE_URL}/schema`, { headers: authHeaders() });
-  } catch (err) {
-    throw transportError(err);
+    colRows = await catalogRows(
+      `SELECT table_name, column_name, data_type, is_nullable, ordinal_position, column_default
+       FROM information_schema.columns
+       WHERE table_schema = 'public'`,
+    );
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) {
+      return { tables: [], relationships: [], supported: false };
+    }
+    throw e;
   }
 
-  if (res.status === 404) return { tables: [], relationships: [], supported: false };
-  if (!res.ok) throw await toApiError(res);
+  // Enrichment queries are best-effort: a failure here still yields tables +
+  // columns (just without indexes / a primary key / an edge).
+  const [idxRows, pkRows, fkRows] = await Promise.all([
+    catalogRows(
+      `SELECT table_name, column_name, index_type, is_unique FROM unidb_catalog.indexes`,
+    ).catch(() => []),
+    catalogRows(
+      `SELECT tc.table_name AS table_name, kcu.column_name AS column_name,
+              kcu.ordinal_position AS ordinal_position
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name
+       WHERE tc.constraint_type = 'PRIMARY KEY'`,
+    ).catch(() => []),
+    // Real foreign keys — the access guide's 4-way ON-form join (unidb has no
+    // JOIN USING). The composite-key alignment conjunct pairs each FK column
+    // with its referenced column.
+    catalogRows(
+      `SELECT tc.constraint_name AS constraint_name,
+              tc.table_name  AS from_table, kcu.column_name AS from_col,
+              kcu.ordinal_position AS from_pos,
+              ccu.table_name AS to_table,   ccu.column_name AS to_col
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name
+       JOIN information_schema.referential_constraints rc ON rc.constraint_name = tc.constraint_name
+       JOIN information_schema.key_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name
+             AND ccu.ordinal_position = kcu.position_in_unique_constraint
+       WHERE tc.constraint_type = 'FOREIGN KEY'`,
+    ).catch(() => []),
+  ]);
 
-  const data = await res.json();
-  return {
-    tables: data?.tables ?? [],
-    relationships: data?.relationships ?? [],
-    supported: true,
-  };
+  const { tables, relationships } = buildCatalogSchema(colRows, idxRows, pkRows, fkRows);
+  return { tables, relationships, supported: true };
 }
 
 // EXPLAIN ANALYZE returns a `rows` result: one single-string column per plan
@@ -201,6 +326,17 @@ export async function explainAnalyze(sql, params = []) {
   const rowsResult = results.find((r) => r.type === 'rows');
   const planLines = (rowsResult?.rows ?? []).map((r) => r[0]);
   return { serverMs: parseExecMs(rowsResult), planLines };
+}
+
+/**
+ * Run `EXPLAIN <sql>` (plan only, no execution) and return the plan lines. Each
+ * line is one string in the single-column `QUERY PLAN` result, already indented
+ * by the engine to show the operator tree.
+ */
+export async function explain(sql, params = []) {
+  const { results } = await runSql(`EXPLAIN ${sql}`, params);
+  const rowsResult = results.find((r) => r.type === 'rows');
+  return (rowsResult?.rows ?? []).map((r) => r[0]);
 }
 
 // Is this SQL a single read query we can safely EXPLAIN ANALYZE? (EXPLAIN
