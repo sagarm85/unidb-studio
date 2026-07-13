@@ -21,6 +21,7 @@
   // shows the `users` table, not every table with a `user_id` column. Only when
   // NO table name matches do we fall back to column-name matches, so you can
   // still find "the table with `email`".
+  let open  = $state(true);
   let query = $state('');
 
   const filtered = $derived.by(() => {
@@ -32,8 +33,36 @@
   });
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" class:collapsed={!open}>
+  <!-- Toggle is the first child — always visible even when collapsed -->
+  <div class="sidebar-top">
+    <button
+      class="sidebar-toggle"
+      onclick={() => (open = !open)}
+      title={open ? 'Collapse sidebar' : 'Expand sidebar'}
+      aria-label={open ? 'Collapse sidebar' : 'Expand sidebar'}
+    >
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.7">
+        {#if open}
+          <path d="M9 2L4 7l5 5"/>
+        {:else}
+          <path d="M5 2l5 5-5 5"/>
+        {/if}
+      </svg>
+    </button>
+  </div>
+
+  <div class="sidebar-content">
   <CollapsibleSection title="database">
+    {#snippet icon()}
+      <!-- Database cylinder icon -->
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"
+           style="flex-shrink:0;color:var(--muted)">
+        <ellipse cx="8" cy="4" rx="6" ry="2" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M2 4v4c0 1.1 2.686 2 6 2s6-.9 6-2V4" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M2 8v4c0 1.1 2.686 2 6 2s6-.9 6-2V8" stroke="currentColor" stroke-width="1.4"/>
+      </svg>
+    {/snippet}
     {#snippet action()}
       <button class="refresh" onclick={() => onRefresh?.()} disabled={loading} title="Reload tables">↻</button>
     {/snippet}
@@ -81,6 +110,7 @@
       </ul>
     {/if}
   </CollapsibleSection>
+  </div>
 </aside>
 
 <style>
@@ -88,9 +118,55 @@
     width: 240px;
     flex-shrink: 0;
     border-right: 1px solid var(--border);
-    padding: 6px 12px;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     background: var(--panel-alt);
+    transition: width 0.2s ease;
+    overflow: hidden;       /* clips content when collapsing */
+  }
+  .sidebar.collapsed {
+    width: 36px;
+    border-right: 1px solid var(--border);
+  }
+
+  /* always-visible row that holds the toggle */
+  .sidebar-top {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 6px 4px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar.collapsed .sidebar-top {
+    justify-content: center;
+  }
+
+  .sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--muted);
+    padding: 0;
+    flex-shrink: 0;
+  }
+  .sidebar-toggle:hover { color: var(--text); border-color: var(--accent); }
+
+  /* scrollable content area */
+  .sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 12px;
+  }
+  /* hide content entirely when collapsed so nothing bleeds through */
+  .sidebar.collapsed .sidebar-content {
+    display: none;
   }
   .refresh {
     background: none;

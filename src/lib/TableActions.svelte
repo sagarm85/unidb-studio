@@ -66,15 +66,22 @@
     <div class="modal-body">
       <section>
         <h4>Columns</h4>
-        <ul class="collist">
+        <div class="collist">
+          <div class="col-hdr">
+            <span>Name</span>
+            <span>Type</span>
+            <span>Nullable</span>
+            <span></span>
+          </div>
           {#each cols as c}
-            <li>
+            <div class="col-row">
               <span class="cn">{c.name}</span>
               <span class="ct">{c.type}{isVectorType(c.type) && c.index === 'hnsw' ? ' · ANN' : ''}</span>
+              <span class="cn {c.nullable === false ? 'no' : 'yes'}">{c.nullable === false ? 'No' : 'Yes'}</span>
               <button class="x" title="Drop column" onclick={() => dropColumn(c.name)} disabled={busy}>✕</button>
-            </li>
+            </div>
           {/each}
-        </ul>
+        </div>
       </section>
 
       <section>
@@ -159,31 +166,50 @@
     letter-spacing: 0.05em;
   }
   .collist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
   }
-  .collist li {
-    display: flex;
+  .col-hdr,
+  .col-row {
+    display: grid;
+    grid-template-columns: 1fr 120px 80px 24px;
     align-items: center;
     gap: 8px;
-    padding: 4px 6px;
-    border-radius: 6px;
+    padding: 6px 10px;
   }
-  .collist li:hover {
+  .col-hdr {
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .col-row {
+    border-bottom: 1px solid var(--border);
+  }
+  .col-row:last-child {
+    border-bottom: none;
+  }
+  .col-row:hover {
     background: var(--panel-alt);
   }
   .cn {
     font-family: var(--mono);
     font-size: 13px;
-    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  .cn.yes { color: var(--muted); font-size: 12px; }
+  .cn.no  { color: var(--text);  font-size: 12px; }
   .ct {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--muted);
   }
   .addrow {
