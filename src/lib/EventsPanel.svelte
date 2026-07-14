@@ -187,16 +187,29 @@
     {/if}
 
     {#if $events.length}
-      <div class="stream">
-        {#each $events as e (e.seq)}
-          <div class="evt">
-            <span class="seq">#{e.seq}</span>
-            <span class="op {opClass(e.op)}">{e.op}</span>
-            <span class="tbl">{e.table_name}</span>
-            <span class="xid" title="transaction id">xid {e.xid}</span>
-            <code class="payload">{JSON.stringify(e.payload)}</code>
-          </div>
-        {/each}
+      <div class="stream-wrap">
+        <table class="evt-table">
+          <thead>
+            <tr>
+              <th class="col-seq">Seq</th>
+              <th class="col-op">Operation</th>
+              <th class="col-tbl">Table</th>
+              <th class="col-xid">Txn ID</th>
+              <th class="col-payload">Row data</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each $events as e (e.seq)}
+              <tr>
+                <td class="col-seq mono muted">#{e.seq}</td>
+                <td class="col-op"><span class="op-chip {opClass(e.op)}">{e.op.toUpperCase()}</span></td>
+                <td class="col-tbl mono">{e.table_name}</td>
+                <td class="col-xid mono muted">{e.xid}</td>
+                <td class="col-payload"><code class="payload">{JSON.stringify(e.payload)}</code></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       </div>
     {:else if !$streaming}
       <p class="muted">Pick a table (or "all enabled"), then <strong>Start tail</strong> to watch committed INSERT/UPDATE/DELETE events live.</p>
@@ -397,17 +410,29 @@
   .dot.on { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
 
   /* Stream */
-  .stream { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-family: var(--mono); font-size: 12.5px; }
-  .evt    { display: flex; gap: 10px; align-items: baseline; padding: 5px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  .evt:hover { background: var(--panel-alt); }
-  .seq  { flex: 0 0 auto; color: var(--muted); }
-  .op   { flex: 0 0 58px; font-weight: 700; text-transform: uppercase; font-size: 11px; }
-  .op-insert { color: #16a34a; }
-  .op-update { color: #d99922; }
-  .op-delete { color: var(--err-fg); }
-  .tbl  { flex: 0 0 auto; color: var(--accent); }
-  .xid  { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
-  .payload { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .stream-wrap { border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 60vh; }
+  .evt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .evt-table thead th {
+    position: sticky; top: 0; background: var(--panel-alt);
+    text-align: left; padding: 6px 10px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .evt-table tbody tr { border-bottom: 1px solid var(--border); }
+  .evt-table tbody tr:last-child { border-bottom: none; }
+  .evt-table tbody tr:hover { background: var(--panel-alt); }
+  .evt-table td { padding: 5px 10px; vertical-align: middle; }
+  .col-seq  { width: 60px; white-space: nowrap; }
+  .col-op   { width: 90px; white-space: nowrap; }
+  .col-tbl  { width: 140px; white-space: nowrap; color: var(--accent); }
+  .col-xid  { width: 80px; white-space: nowrap; font-size: 11px; }
+  .col-payload { max-width: 0; }
+  .op-chip { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; font-family: var(--mono); }
+  .op-insert { background: rgba(22,163,74,0.12);  color: #16a34a; }
+  .op-update { background: rgba(202,138,4,0.12);  color: #b45309; }
+  .op-delete { background: rgba(220,38,38,0.12);  color: var(--err-fg); }
+  .payload { font-family: var(--mono); font-size: 12px; color: var(--text); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 640px; }
 
   /* Info tables */
   .section-desc { font-size: 13px; color: var(--muted); margin: 0; }

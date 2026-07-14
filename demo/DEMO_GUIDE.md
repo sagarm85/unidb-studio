@@ -203,7 +203,7 @@ UPDATE orders SET status = 'shipped' WHERE id = 99999;
 DELETE FROM orders WHERE id = 99999;
 ```
 
-**Studio Events tab columns:** seq, table, operation (INSERT/UPDATE/DELETE), old state, new state, timestamp.
+**Studio Events tab columns:** seq, operation (INSERT/UPDATE/DELETE), table, txn ID, row data (payload).
 
 ---
 
