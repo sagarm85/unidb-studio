@@ -104,13 +104,17 @@ def rand_ts(rng, lo=0, hi=730):
     return (BASE_DT - timedelta(seconds=delta_secs)).strftime('%Y-%m-%d %H:%M:%S')
 
 
-def progress(label, done, total, t0):
+def progress(label, done, total, t0, end="\n"):
     ela  = time.time() - t0
     rate = done / ela if ela > 0 else 0
     eta  = (total - done) / rate if rate > 0 else 0
     pct  = done / total * 100
-    print(f"  {label:<22} {done:>8,}/{total:,} ({pct:.0f}%)  "
-          f"{ela:.0f}s  {rate:,.0f} rows/s  eta {eta:.0f}s")
+    bar_w = 20
+    filled = int(bar_w * done / total)
+    bar = "█" * filled + "░" * (bar_w - filled)
+    print(f"\r  {label:<18} [{bar}] {pct:5.1f}%  "
+          f"{done:>8,}/{total:,}  {rate:,.0f}/s  eta {eta:.0f}s",
+          end=end, flush=True)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -134,8 +138,6 @@ def main():
     print(f"\n── Seeding ({args.size}) via bulk API ───────────────────────────────────")
     print(f"   customers={N_CUST:,}  products={N_PROD:,}  orders={N_ORD:,}")
 
-    REPORT_EVERY = max(1, N_CUST // 5)  # 5 progress lines per table max
-
     # ── Customers ─────────────────────────────────────────────────────────
     print(f"\n── Customers ({N_CUST:,}) ──────────────────────────────────────────────")
     t0, inserted, rows = time.time(), 0, []
@@ -149,11 +151,12 @@ def main():
             "created_at": rand_ts(rng, 365, 730)})
         if len(rows) == BULK_CHUNK:
             inserted += bulk_insert("customers", rows)
-            if inserted % REPORT_EVERY < BULK_CHUNK:
-                progress("customers", inserted, N_CUST, t0)
+            progress("customers", inserted, N_CUST, t0, end="")
             rows = []
-    if rows: inserted += bulk_insert("customers", rows)
-    print(f"  done {inserted:,} in {time.time()-t0:.1f}s  ({inserted/(time.time()-t0):.0f} rows/s)")
+    if rows:
+        inserted += bulk_insert("customers", rows)
+    progress("customers", inserted, N_CUST, t0)
+    print(f"  ✓ {inserted:,} in {time.time()-t0:.1f}s  ({inserted/(time.time()-t0):.0f} rows/s)")
 
     # ── Products ──────────────────────────────────────────────────────────
     print(f"\n── Products ({N_PROD:,}) ─────────────────────────────────────────────")
@@ -173,7 +176,6 @@ def main():
     print(f"\n── Orders ({N_ORD:,}) + order_items ─────────────────────────────────")
     t0 = time.time()
     ord_rows, oi_rows, oi_id, ord_done = [], [], 0, 0
-    REPORT_ORD = max(1, N_ORD // 5)
 
     for i in range(N_ORD):
         oid = i + 1
@@ -198,8 +200,7 @@ def main():
             bulk_insert("orders", ord_rows)
             bulk_insert("order_items", oi_rows)
             ord_done += len(ord_rows)
-            if ord_done % REPORT_ORD < ORD_CHUNK:
-                progress("orders", ord_done, N_ORD, t0)
+            progress("orders", ord_done, N_ORD, t0, end="")
             ord_rows, oi_rows = [], []
 
     if ord_rows:
@@ -207,13 +208,13 @@ def main():
         bulk_insert("order_items", oi_rows)
         ord_done += len(ord_rows)
 
-    print(f"  done orders={ord_done:,} order_items={oi_id:,} in {time.time()-t0:.1f}s")
+    progress("orders", ord_done, N_ORD, t0)
+    print(f"  ✓ orders={ord_done:,} order_items={oi_id:,} in {time.time()-t0:.1f}s")
 
     # ── Invoices + invoice_items ──────────────────────────────────────────
     print(f"\n── Invoices + invoice_items ──────────────────────────────────────────")
     t0 = time.time()
     inv_rows, ii_rows, inv_id, ii_id, inv_done = [], [], 0, 0, 0
-    REPORT_INV = max(1, N_ORD // 5)
 
     for i in range(N_ORD):
         inv_id += 1
@@ -242,8 +243,7 @@ def main():
             bulk_insert("invoices", inv_rows)
             bulk_insert("invoice_items", ii_rows)
             inv_done += len(inv_rows)
-            if inv_done % REPORT_INV < ORD_CHUNK:
-                progress("invoices", inv_done, N_ORD, t0)
+            progress("invoices", inv_done, N_ORD, t0, end="")
             inv_rows, ii_rows = [], []
 
     if inv_rows:
@@ -251,7 +251,8 @@ def main():
         bulk_insert("invoice_items", ii_rows)
         inv_done += len(inv_rows)
 
-    print(f"  done invoices={inv_done:,} invoice_items={ii_id:,} in {time.time()-t0:.1f}s")
+    progress("invoices", inv_done, N_ORD, t0)
+    print(f"  ✓ invoices={inv_done:,} invoice_items={ii_id:,} in {time.time()-t0:.1f}s")
 
     # ── Final counts ──────────────────────────────────────────────────────
     print("\n── Row counts ───────────────────────────────────────────────────────────")

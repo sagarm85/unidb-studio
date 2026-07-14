@@ -122,17 +122,16 @@
 </script>
 
 <div class="obs">
-  <!-- Header bar -->
-  <div class="toolbar">
+  <!-- Subtab nav — deliberately separate from the live/refresh controls -->
+  <div class="obs-header">
     <div class="subtabs">
       <button class:active={subTab === 'overview'} onclick={() => switchTab('overview')}>Overview</button>
       <button class:active={subTab === 'queries'}  onclick={() => switchTab('queries')}>Query Performance</button>
     </div>
-    <span class="spacer"></span>
-    <label class="live-toggle">
-      <input type="checkbox" bind:checked={live} />
-      Live ({REFRESH_MS / 1000}s)
-    </label>
+    <span class="hspacer"></span>
+    <!-- checkbox + label kept as siblings (not nested) to avoid label hit-area bleed -->
+    <input type="checkbox" id="obs-live" bind:checked={live} style="cursor:pointer" />
+    <label for="obs-live" class="live-label">Live ({REFRESH_MS / 1000}s)</label>
     <button class="refresh-btn" onclick={load} title="Refresh now">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
         <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5c1.8 0 3.4.87 4.4 2.2"/>
@@ -417,43 +416,41 @@
     padding-bottom: 24px;
   }
 
-  /* ── toolbar ── */
-  .toolbar {
+  /* ── header (subtabs + controls) ── */
+  .obs-header {
     display: flex;
     align-items: center;
     gap: 10px;
+    padding-bottom: 2px;
+    border-bottom: 1px solid var(--border);
   }
   .subtabs {
     display: flex;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 3px;
-    gap: 2px;
+    gap: 0;
   }
   .subtabs button {
     background: none;
     border: none;
-    border-radius: 6px;
-    padding: 5px 14px;
+    border-bottom: 2px solid transparent;
+    padding: 6px 16px;
     font-size: 13px;
     color: var(--muted);
     cursor: pointer;
     font-weight: 500;
+    margin-bottom: -1px;
   }
   .subtabs button.active {
-    background: var(--panel);
-    color: var(--text);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
   }
-  .spacer { flex: 1; }
-  .live-toggle {
-    display: flex;
-    align-items: center;
-    gap: 5px;
+  .subtabs button:hover:not(.active) { color: var(--text); }
+  .hspacer { flex: 1; }
+  .live-label {
     font-size: 12px;
     color: var(--muted);
     cursor: pointer;
+    user-select: none;
   }
   .refresh-btn {
     display: flex;

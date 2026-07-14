@@ -64,17 +64,6 @@ cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
 > `docker compose -f docker/docker-compose.minio.yml down`
 > (add `-v` to wipe stored objects too)
 
-### Option B — Docker (required for Postgres comparison)
-
-```bash
-cd unidb-studio/demo
-docker-compose -f docker-compose.demo.yml up --build -d
-cd ..
-npm run dev    # Studio still runs locally; points at :8080
-```
-
-MinIO console: http://localhost:9001  (user: `minioadmin` / `minioadmin`)
-
 ---
 
 ## 2. E-commerce schema + seed
@@ -101,6 +90,45 @@ python3 demo/seed.py --size 10M    # ~10M rows,    ~2.5 h
 | **SQL** | Run `SELECT p.category, SUM(oi.line_total) FROM order_items oi JOIN products p ON p.id = oi.product_id GROUP BY p.category ORDER BY 2 DESC` |
 | **Query Performance** | Engine insert p50/p99 μs (B-tree cost), SELECT latency after the JOIN above |
 | **Observability** | Live WAL bytes, commit count, buffer pool hit ratio |
+
+### Complex query — 50 k rows from 5 M (good for 5M+ seeds)
+
+Run this in Studio → **SQL editor** after seeding at `--size 5M` or larger.
+It performs a 4-table join with GROUP BY + HAVING, window functions, and a
+`LIMIT 50000` — a realistic read-heavy analytics workload on millions of rows.
+
+```sql
+-- Revenue & invoice analytics per customer — 50 k rows from 5 M dataset
+-- Expect: multi-second runtime; watch p99 spike in Observability → Query Performance
+SELECT
+    c.id                                              AS customer_id,
+    c.name                                            AS customer_name,
+    c.city,
+    c.country,
+    COUNT(DISTINCT o.id)                              AS order_count,
+    SUM(oi.line_total)                                AS order_revenue,
+    AVG(oi.unit_price)                                AS avg_unit_price,
+    COUNT(DISTINCT i.id)                              AS invoice_count,
+    SUM(CASE WHEN i.status = 'paid'    THEN i.total_amount ELSE 0 END)  AS paid_amount,
+    SUM(CASE WHEN i.status = 'overdue' THEN i.total_amount ELSE 0 END)  AS overdue_amount,
+    MAX(o.created_at)                                 AS last_order_at
+FROM customers c
+JOIN orders      o  ON o.customer_id  = c.id
+JOIN order_items oi ON oi.order_id    = o.id
+JOIN invoices    i  ON i.order_id     = o.id
+GROUP BY c.id, c.name, c.city, c.country
+HAVING COUNT(DISTINCT o.id) >= 2
+ORDER BY order_revenue DESC
+LIMIT 50000;
+```
+
+**What to show:**
+
+| Observability tab | Expected |
+|---|---|
+| Query Performance → Statement latency | `select` p99 spikes into 100s ms range |
+| Overview → Commits/sec | Flat (read-only query) |
+| Overview → Buffer pool hit ratio | Should stay high (>90%) on repeat runs |
 
 ---
 
