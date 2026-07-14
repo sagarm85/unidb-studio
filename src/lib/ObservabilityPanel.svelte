@@ -70,6 +70,8 @@
     return () => clearInterval(id);
   });
 
+  function switchTab(t) { subTab = t; }
+
   const kinds   = ['select', 'insert', 'update', 'delete'];
   const latency = $derived(stats?.statement_latency ?? {});
   const bp      = $derived(stats?.bufferpool ?? null);
@@ -123,8 +125,8 @@
   <!-- Header bar -->
   <div class="toolbar">
     <div class="subtabs">
-      <button class:active={subTab === 'overview'} onclick={() => (subTab = 'overview')}>Overview</button>
-      <button class:active={subTab === 'queries'}  onclick={() => (subTab = 'queries')}>Query Performance</button>
+      <button class:active={subTab === 'overview'} onclick={() => switchTab('overview')}>Overview</button>
+      <button class:active={subTab === 'queries'}  onclick={() => switchTab('queries')}>Query Performance</button>
     </div>
     <span class="spacer"></span>
     <label class="live-toggle">
