@@ -115,30 +115,29 @@ python3 demo/seed.py --size 10M    # ~8M rows,    ~8.5 min
 ### Complex query — 50 k rows from 5 M (good for 5M+ seeds)
 
 Run this in Studio → **SQL editor** after seeding at `--size 5M` or larger.
-It performs a 4-table join with GROUP BY + HAVING, window functions, and a
-`LIMIT 50000` — a realistic read-heavy analytics workload on millions of rows.
+It performs a 4-table join with GROUP BY + HAVING + ORDER BY — a realistic
+read-heavy analytics workload across millions of rows.
 
 ```sql
--- Revenue & invoice analytics per customer — 50 k rows from 5 M dataset
+-- Revenue & invoice analytics per customer — up to 50 k rows from 5 M dataset
 -- Expect: multi-second runtime; watch p99 spike in Observability → Query Performance
 SELECT
-    c.id                                              AS customer_id,
-    c.name                                            AS customer_name,
+    c.id             AS customer_id,
+    c.name           AS customer_name,
     c.city,
     c.country,
-    COUNT(DISTINCT o.id)                              AS order_count,
-    SUM(oi.line_total)                                AS order_revenue,
-    AVG(oi.unit_price)                                AS avg_unit_price,
-    COUNT(DISTINCT i.id)                              AS invoice_count,
-    SUM(CASE WHEN i.status = 'paid'    THEN i.total_amount ELSE 0 END)  AS paid_amount,
-    SUM(CASE WHEN i.status = 'overdue' THEN i.total_amount ELSE 0 END)  AS overdue_amount,
-    MAX(o.created_at)                                 AS last_order_at
+    COUNT(o.id)      AS order_count,
+    SUM(oi.line_total)   AS order_revenue,
+    AVG(oi.unit_price)   AS avg_unit_price,
+    COUNT(i.id)      AS invoice_count,
+    SUM(i.total_amount)  AS total_invoiced,
+    MAX(o.created_at)    AS last_order_at
 FROM customers c
-JOIN orders      o  ON o.customer_id  = c.id
-JOIN order_items oi ON oi.order_id    = o.id
-JOIN invoices    i  ON i.order_id     = o.id
+JOIN orders      o  ON o.customer_id = c.id
+JOIN order_items oi ON oi.order_id   = o.id
+JOIN invoices    i  ON i.order_id    = o.id
 GROUP BY c.id, c.name, c.city, c.country
-HAVING COUNT(DISTINCT o.id) >= 2
+HAVING COUNT(o.id) >= 2
 ORDER BY order_revenue DESC
 LIMIT 50000;
 ```
