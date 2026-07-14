@@ -210,7 +210,25 @@ DELETE FROM orders WHERE id = 99999;
 ## 5. Vector search (NEAR)
 
 ### What it demonstrates
-unidb stores `VECTOR(n)` columns and builds an **HNSW** approximate nearest-neighbour index. `WHERE NEAR(col, [...], k)` returns the k closest rows in **sub-millisecond** time.
+unidb stores `VECTOR(n)` columns and builds an **HNSW** approximate nearest-neighbour index. `WHERE NEAR(col, <vector>, k)` returns the k closest rows in **sub-millisecond** time.
+
+### How vector search actually works
+
+> **Plain-English searches don't go directly into SQL.** Every vector database
+> (unidb, pgvector, Pinecone, Qdrant) works the same way:
+>
+> ```
+> Your text: "wireless headphones"
+>       ↓  embed() — your Python code, sentence-transformers, OpenAI, etc.
+>  [0.12, 0.04, 0.31, ...]   ← numeric vector the engine can compare
+>       ↓
+>  WHERE NEAR(embedding, [...], 3)
+> ```
+>
+> Text → vector conversion is an **application-layer step**.
+> The engine stores and ranks `f32` arrays; it has no built-in language model.
+> The demo script (`vector_demo.py`) does this conversion for you — you pass a
+> text query string, it embeds it, then queries unidb with the resulting vector.
 
 ```bash
 python3 demo/vector_demo.py
@@ -219,25 +237,39 @@ python3 demo/vector_demo.py
 **What the script does:**
 1. Creates `documents` table with `VECTOR(64)` column
 2. `CREATE INDEX USING HNSW` on the embedding column
-3. Inserts 12 product descriptions as 64-dim vectors
-4. Runs 4 search queries:
-   - "Find headphones / audio gear"
-   - "Find desk and office accessories"
-   - "Find fitness equipment"
-   - "Find air quality devices"
+3. Inserts 12 product descriptions — each converted to a 64-dim vector by `embed(text)`
+4. Runs 4 text searches (converted to vectors automatically):
+   - `"wireless headphones noise cancellation audio earbuds bluetooth"` → finds headphone products
+   - `"laptop stand desk ergonomic monitor USB hub keyboard"` → finds desk/office items
+   - `"running shoes trail fitness yoga resistance training"` → finds fitness gear
+   - `"air quality CO2 humidity sensor smart home"` → finds air quality devices
 5. Prints top-3 nearest neighbours per query with round-trip time
 
-**Studio SQL editor — try it live:**
+**Studio SQL editor — browse the data:**
 
 ```sql
--- See the documents table
+-- See the documents table and their stored titles
 SELECT id, title FROM documents;
+```
 
--- Nearest-neighbour search (replace vector with any 64-dim float array)
--- This finds "headphones / audio" cluster:
+**Low-level reference — what NEAR looks like at the SQL layer:**
+
+The vector below is what `embed("wireless headphones noise cancellation")` produces.
+In real applications this vector comes from your backend, not typed by hand.
+
+```sql
+-- Developer reference: raw NEAR syntax (vector pre-computed by application code)
+-- embed("wireless headphones noise cancellation") → this 64-dim vector:
 SELECT id, title
 FROM documents
-WHERE NEAR(embedding, [0.1, 0.4, 0.0, 0.3, ...], 3);
+WHERE NEAR(embedding, [0.0, 0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3);
 ```
 
 ### Upgrade to real semantic embeddings
@@ -251,6 +283,7 @@ def embed(text: str) -> list[float]:
     return _model.encode(text).tolist()
 
 # Change DIM = 384, and CREATE TABLE ... embedding VECTOR(384)
+# Usage stays identical: embed("wireless headphones") → vector → NEAR()
 ```
 
 ---
