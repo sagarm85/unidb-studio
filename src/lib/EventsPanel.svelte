@@ -122,6 +122,11 @@
   }
 
   const userTables = $derived(tables.filter(t => !/^__/.test(t.name)));
+
+  // Row detail drawer
+  let selectedEvent = $state(null);
+  function openDetail(e) { selectedEvent = e; }
+  function closeDetail() { selectedEvent = null; }
 </script>
 
 <div class="events">
@@ -200,7 +205,7 @@
           </thead>
           <tbody>
             {#each $events as e (e.seq)}
-              <tr>
+              <tr class="evt-row" class:selected={selectedEvent?.seq === e.seq} onclick={() => openDetail(e)} title="Click to inspect payload">
                 <td class="col-seq mono muted">#{e.seq}</td>
                 <td class="col-op"><span class="op-chip {opClass(e.op)}">{e.op.toUpperCase()}</span></td>
                 <td class="col-tbl mono">{e.table_name}</td>
@@ -322,6 +327,23 @@
 
   {/if}
 </div>
+
+<!-- ── Event detail drawer ──────────────────────────────────────────────────── -->
+{#if selectedEvent}
+  <div class="drawer-backdrop" onclick={closeDetail} role="presentation"></div>
+  <div class="drawer">
+    <div class="drawer-head">
+      <span class="op-chip {opClass(selectedEvent.op)}">{selectedEvent.op.toUpperCase()}</span>
+      <span class="drawer-title">{selectedEvent.table_name} · seq #{selectedEvent.seq}</span>
+      <span class="drawer-xid muted">txn {selectedEvent.xid}</span>
+      <button class="drawer-close" onclick={closeDetail} title="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-label">Row data (payload)</div>
+      <pre class="drawer-json">{JSON.stringify(selectedEvent.payload, null, 2)}</pre>
+    </div>
+  </div>
+{/if}
 
 <style>
   .events { display: flex; flex-direction: column; gap: 12px; }
@@ -458,4 +480,55 @@
   }
   .tip-box strong { color: var(--text); }
   .tip-box code { font-family: var(--mono); font-size: 11px; }
+
+  /* ── event row click ── */
+  .evt-row { cursor: pointer; }
+  .evt-row:hover td { background: var(--panel-alt); }
+  .evt-row.selected td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+  /* ── detail drawer ── */
+  .drawer-backdrop {
+    position: fixed; inset: 0; z-index: 40;
+    background: rgba(0,0,0,0.25);
+  }
+  .drawer {
+    position: fixed; bottom: 0; right: 0;
+    width: min(520px, 100vw);
+    max-height: 60vh;
+    z-index: 50;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    border-radius: 10px 0 0 0;
+    display: flex;
+    flex-direction: column;
+    box-shadow: -4px -4px 24px rgba(0,0,0,0.15);
+  }
+  .drawer-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .drawer-title { font-size: 13px; font-weight: 600; flex: 1; font-family: var(--mono); }
+  .drawer-xid   { font-size: 11px; }
+  .drawer-close {
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); font-size: 15px; line-height: 1;
+    padding: 2px 5px; border-radius: 4px;
+  }
+  .drawer-close:hover { background: var(--panel-alt); color: var(--text); }
+  .drawer-body { overflow: auto; padding: 12px 14px; flex: 1; }
+  .drawer-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 6px; }
+  .drawer-json {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
 </style>

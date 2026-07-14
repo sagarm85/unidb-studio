@@ -203,7 +203,7 @@ UPDATE orders SET status = 'shipped' WHERE id = 99999;
 DELETE FROM orders WHERE id = 99999;
 ```
 
-**Studio Events tab columns:** seq, operation (INSERT/UPDATE/DELETE), table, txn ID, row data (payload).
+**Studio Events tab columns:** seq, operation (INSERT/UPDATE/DELETE chip), table, txn ID, row data (payload). Click any row to open a detail drawer showing the full JSON payload formatted with indentation.
 
 ---
 
