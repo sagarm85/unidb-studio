@@ -5,6 +5,7 @@
     txnBegin, txnCommit, txnRollback,
     runSqlCursor, cursorPage, cursorClose,
   } from './api.js';
+  import { embed, vectorToSql } from './embed.js';
   import ResultsGrid from './ResultsGrid.svelte';
   import ErrorBox from './ErrorBox.svelte';
 
@@ -57,6 +58,30 @@
   let history = $state(loadHistory());
   let showHistory = $state(false);
   let showExamples = $state(false);
+
+  // ---- vector embed helper ------------------------------------------------
+  let showEmbed = $state(false);
+  let embedText = $state('');
+  let embedCopied = $state(false);
+  const embedVec = $derived(embedText.trim() ? embed(embedText) : null);
+
+  async function copyVector() {
+    if (!embedVec) return;
+    await navigator.clipboard.writeText(vectorToSql(embedVec));
+    embedCopied = true;
+    setTimeout(() => (embedCopied = false), 1200);
+  }
+
+  async function insertVector() {
+    if (!embedVec || !textarea) return;
+    const vecStr = vectorToSql(embedVec);
+    const start = textarea.selectionStart ?? sql.length;
+    const end   = textarea.selectionEnd   ?? sql.length;
+    sql = sql.slice(0, start) + vecStr + sql.slice(end);
+    await tick();
+    textarea.selectionStart = textarea.selectionEnd = start + vecStr.length;
+    textarea.focus();
+  }
 
   // ---- saved queries (pinned, persisted) ----------------------------------
   const SAVED_KEY = 'unidb-studio.savedQueries';
@@ -419,7 +444,34 @@
         </div>
       {/if}
     </div>
+
+    <button
+      class="tool"
+      class:embed-active={showEmbed}
+      onclick={() => { showEmbed = !showEmbed; showHistory = false; showExamples = false; showSaved = false; }}
+      title="Generate a NEAR() vector from plain text"
+    >Embed</button>
   </div>
+
+  {#if showEmbed}
+    <div class="embed-panel">
+      <input
+        class="embed-input"
+        bind:value={embedText}
+        placeholder="Type text to embed — e.g. wireless headphones noise cancellation…"
+        spellcheck="false"
+      />
+      {#if embedVec}
+        <div class="embed-out">
+          <code class="embed-preview">[{embedVec.slice(0, 8).map(v => v.toFixed(2)).join(', ')}, … ({embedVec.filter(v => v > 0).length} non-zero / 64 dims)]</code>
+          <button class="embed-btn" onclick={copyVector}>{embedCopied ? '✓ Copied' : 'Copy'}</button>
+          <button class="embed-btn primary" onclick={insertVector} title="Insert vector at cursor position in the editor">Insert</button>
+        </div>
+      {:else}
+        <span class="embed-hint">word-hash → 64-dim vector · matches demo/vector_demo.py</span>
+      {/if}
+    </div>
+  {/if}
 
   <textarea
     bind:this={textarea}
@@ -744,5 +796,78 @@
     font-size: 12.5px;
     line-height: 1.5;
     color: var(--text);
+  }
+
+  /* ── vector embed helper ─────────────────────────────────── */
+  .tool.embed-active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .embed-panel {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-alt);
+    flex-wrap: wrap;
+  }
+  .embed-input {
+    flex: 1;
+    min-width: 180px;
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+  }
+  .embed-input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+  .embed-out {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+  }
+  .embed-preview {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+  .embed-hint {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .embed-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .embed-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .embed-btn.primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .embed-btn.primary:hover {
+    opacity: 0.88;
   }
 </style>
