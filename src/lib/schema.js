@@ -211,11 +211,14 @@ export const DEMO_SCHEMA = {
   ],
 };
 
+// TODO(engine-item-tbd): replace this reconstruction with a query for object_ddl once
+//   the engine stores original CREATE TABLE text in information_schema.tables or
+//   unidb_catalog.ddl. The reconstructed DDL below is lossy (original constraint
+//   names and CHECK expressions are not preserved).
 // Reconstruct a CREATE TABLE statement from introspected metadata
 // (types/nullability/PK/secondary indexes). The engine retains no original
 // CREATE text and exposes no object_ddl, so this client-side rebuild is the
-// only source of DDL — canonical, not byte-identical (see the engine access
-// guide §4, "Object DDL — reconstruct from metadata").
+// only source of DDL — canonical, not byte-identical.
 export function tableDDL(table) {
   const cols = table.columns ?? [];
   const pk = Array.isArray(table.primaryKey) && table.primaryKey.length

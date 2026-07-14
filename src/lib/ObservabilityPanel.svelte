@@ -1,5 +1,5 @@
 <script>
-  import { getStats } from './api.js';
+  import { getStats, getStatsHistory } from './api.js';
   import { formatMicros, formatCount, formatDuration } from './format.js';
   import ErrorBox from './ErrorBox.svelte';
   import MetricChart from './MetricChart.svelte';
@@ -15,10 +15,19 @@
   let live      = $state(true);
   let subTab    = $state('overview'); // 'overview' | 'queries'
 
-  // Accumulated time-series: array of { t, commits, activeTxns, hitRatio, walBytes }
+  // History prefilled from GET /stats/history on mount; subsequent polls append live points.
   let history = $state([]);
-  let prevCommits  = null;
-  let prevWalBytes = null;
+
+  function serverPointToLocal(p) {
+    return {
+      t:             p.t,
+      activeTxns:    p.active_transactions ?? 0,
+      hitRatio:      p.bufferpool_hit_ratio != null ? p.bufferpool_hit_ratio * 100 : null,
+      commitsPerSec: p.commits_per_sec  ?? 0,
+      walBytesPerSec: p.wal_bytes_per_sec ?? 0,
+      lockWaits:     null, // not in history response
+    };
+  }
 
   async function load() {
     try {
@@ -26,19 +35,19 @@
       supported = out.supported;
       if (out.supported) {
         stats = out.stats;
-        const now = Date.now();
-        const commits  = stats.commits  ?? 0;
-        const walBytes = stats.wal_bytes ?? 0;
-        const point = {
-          t:          now,
-          activeTxns: stats.active_transactions ?? 0,
-          hitRatio:   stats.bufferpool?.hit_ratio != null ? stats.bufferpool.hit_ratio * 100 : null,
-          commitsPerSec:  prevCommits  != null ? Math.max(0, (commits  - prevCommits)  / (REFRESH_MS / 1000)) : 0,
-          walBytesPerSec: prevWalBytes != null ? Math.max(0, (walBytes - prevWalBytes) / (REFRESH_MS / 1000)) : 0,
-          lockWaits:  stats.locks?.waits ?? 0,
-        };
-        prevCommits  = commits;
-        prevWalBytes = walBytes;
+        const point = serverPointToLocal({
+          t:                  Date.now(),
+          active_transactions: stats.active_transactions,
+          bufferpool_hit_ratio: stats.bufferpool?.hit_ratio,
+          commits_per_sec:    null, // computed by server in history; live poll falls back to 0
+          wal_bytes_per_sec:  null,
+        });
+        // Carry server rates from the most recent history point if available
+        const last = history[history.length - 1];
+        if (last) {
+          point.commitsPerSec  = last.commitsPerSec;
+          point.walBytesPerSec = last.walBytesPerSec;
+        }
         history = [...history.slice(-(MAX_HISTORY - 1)), point];
       }
       error = null;
@@ -50,11 +59,18 @@
   }
 
   $effect(() => {
+    // Prefill charts from engine ring buffer before starting the live poll
+    getStatsHistory({ points: MAX_HISTORY }).then(({ points }) => {
+      if (points.length) history = points.map(serverPointToLocal);
+    }).catch(() => {});
+
     load();
     if (!live) return;
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
   });
+
+  function switchTab(t) { subTab = t; }
 
   const kinds   = ['select', 'insert', 'update', 'delete'];
   const latency = $derived(stats?.statement_latency ?? {});
@@ -109,8 +125,8 @@
   <!-- Header bar -->
   <div class="toolbar">
     <div class="subtabs">
-      <button class:active={subTab === 'overview'} onclick={() => (subTab = 'overview')}>Overview</button>
-      <button class:active={subTab === 'queries'}  onclick={() => (subTab = 'queries')}>Query Performance</button>
+      <button class:active={subTab === 'overview'} onclick={() => switchTab('overview')}>Overview</button>
+      <button class:active={subTab === 'queries'}  onclick={() => switchTab('queries')}>Query Performance</button>
     </div>
     <span class="spacer"></span>
     <label class="live-toggle">
@@ -350,7 +366,7 @@
             </tbody>
           </table>
         {:else}
-          <p class="muted no-slow">No slow queries recorded.</p>
+          <p class="muted no-slow">No slow queries recorded — set <code>UNIDB_SLOW_QUERY_MS</code> on the engine to enable threshold logging.</p>
         {/if}
       </section>
 

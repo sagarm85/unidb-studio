@@ -425,7 +425,86 @@ export async function getLogs(opts = {}) {
   };
 }
 
-// ---- change-event stream (Milestone 20) ---------------------------------
+// ---- change-event stream (Milestone 20 + item 33) -----------------------
+
+/** GET /tables/{table}/events → { enabled: bool }  (item 33) */
+export async function getCdcStatus(table) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/tables/${encodeURIComponent(table)}/events`, {
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json(); // { enabled: bool }
+}
+
+/** DELETE /tables/{table}/events — disable CDC on a table  (item 33) */
+export async function disableTableEvents(table) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/tables/${encodeURIComponent(table)}/events`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** GET /events/head → { seq: N }  (item 33) */
+export async function getEventsHead() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/events/head`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json(); // { seq: number }
+}
+
+/** POST /events/ack — durably advance a named consumer's offset  (item 33) */
+export async function ackEvents(consumer, upToSeq) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/events/ack`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ consumer, up_to_seq: upToSeq }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/**
+ * GET /stats/history → { interval_ms, points: [{t, commits_per_sec,
+ * wal_bytes_per_sec, active_transactions, bufferpool_hit_ratio, ...}] }
+ * (item 34)
+ */
+export async function getStatsHistory({ points = 60, intervalMs = 5000 } = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ points: String(points), interval_ms: String(intervalMs) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/stats/history?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { interval_ms: intervalMs, points: [] };
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
 /**
  * Opt a table into event capture: POST /tables/{table}/events. Idempotent —
  * once enabled, every committed INSERT/UPDATE/DELETE also appends a change

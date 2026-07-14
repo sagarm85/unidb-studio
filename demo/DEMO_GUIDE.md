@@ -25,26 +25,7 @@ cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 
 ## 1. Start the stack
 
-### Option A — local binary (fastest, no Docker)
-
-```bash
-# Terminal 1 — unidb engine (without Storage tab)
-cargo build -p unidb-server-full && \
-UNIDB_DATA_DIR=/tmp/unidb-demo-data \
-UNIDB_JWT_SECRET=dev-secret \
-UNIDB_REQUEST_TIMEOUT_SECS=300 \
-  ./target/debug/unidb-server-full
-
-# Terminal 2 — Studio dev server (runs in background, logs to /tmp/studio.log)
-cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
-# Open http://localhost:5173
-# To tail logs: tail -f /tmp/studio.log
-```
-
-#### Option A + Storage tab (MinIO)
-
-The Storage tab requires MinIO running alongside the engine.
-MinIO lives in the engine repo and has its own lightweight compose file.
+### Option A — local binary + MinIO (Storage tab)
 
 ```bash
 # Step 1 — start MinIO (one-time; the createbucket service makes the `unidb` bucket)
@@ -53,21 +34,30 @@ docker compose -f docker/docker-compose.minio.yml up -d
 # MinIO S3 API: http://localhost:9000
 # MinIO console: http://localhost:9001  (minioadmin / minioadmin)
 
-# Step 2 — start the engine WITH storage env vars (Terminal 1)
-cargo build -p unidb-server-full && \
-UNIDB_DATA_DIR=/tmp/unidb-demo-data \
-UNIDB_JWT_SECRET=dev-secret \
-UNIDB_REQUEST_TIMEOUT_SECS=300 \
-STORAGE_BACKEND=minio \
-STORAGE_S3_ENDPOINT=http://localhost:9000 \
-STORAGE_ACCESS_KEY=minioadmin \
-STORAGE_SECRET_KEY=minioadmin \
-STORAGE_BUCKET=unidb \
-STORAGE_FORCE_PATH_STYLE=true \
-  ./target/debug/unidb-server-full
+# Step 2 — build engine then start in background (logs → /tmp/unidb.log)
+# Use debug/ for fast iteration, release/ for seed perf (~10-50× faster)
+cargo build -p unidb-server-full                  # debug (fast compile)
+# cargo build --release -p unidb-server-full      # release (fast runtime)
 
-# Step 3 — Studio dev server (Terminal 2, same as before)
+nohup env \
+  UNIDB_DATA_DIR=/tmp/unidb-demo-data \
+  UNIDB_JWT_SECRET=dev-secret \
+  UNIDB_REQUEST_TIMEOUT_SECS=300 \
+  STORAGE_BACKEND=minio \
+  STORAGE_S3_ENDPOINT=http://localhost:9000 \
+  STORAGE_ACCESS_KEY=minioadmin \
+  STORAGE_SECRET_KEY=minioadmin \
+  STORAGE_BUCKET=unidb \
+  STORAGE_FORCE_PATH_STYLE=true \
+  ./target/debug/unidb-server-full > /tmp/unidb.log 2>&1 &
+  # swap debug/ → release/ after a release build
+# To tail logs: tail -f /tmp/unidb.log
+# To stop:      pkill -f unidb-server-full
+
+# Step 3 — Studio dev server (logs → /tmp/studio.log)
 cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
+# Open http://localhost:5173
+# To tail logs: tail -f /tmp/studio.log
 ```
 
 > The Storage tab will now show the `unidb` bucket. To stop MinIO:
@@ -93,10 +83,13 @@ MinIO console: http://localhost:9001  (user: `minioadmin` / `minioadmin`)
 # Create 6 tables with FK constraints
 python3 demo/setup_schema.py
 
-# Seed — start at 10k, scale up for bigger demo
-python3 demo/seed.py --size 10k    # ~15k rows,  ~25s
-python3 demo/seed.py --size 50k    # ~75k rows,  ~2 min
-python3 demo/seed.py --size 200k   # ~370k rows, ~8 min
+# Seed — start at 10k, scale up for bigger demo (release build timings)
+python3 demo/seed.py --size 10k    # ~15k rows,    ~15s
+python3 demo/seed.py --size 50k    # ~75k rows,    ~75s
+python3 demo/seed.py --size 200k   # ~370k rows,   ~6 min
+python3 demo/seed.py --size 1M     # ~1.86M rows,  ~28 min
+python3 demo/seed.py --size 5M     # ~5M rows,     ~75 min
+python3 demo/seed.py --size 10M    # ~10M rows,    ~2.5 h
 ```
 
 **Studio walkthrough after seeding:**

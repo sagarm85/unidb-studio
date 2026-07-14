@@ -3,15 +3,12 @@ import { openEventStream } from './api.js';
 
 const MAX_ROWS    = 500;
 const LS_KEY      = 'unidb_event_stream';   // localStorage persistence key
-const LS_CDC_KEY  = 'unidb_cdc_tables';     // tracks which tables have CDC enabled
 
 // ── Reactive state ────────────────────────────────────────────────────────────
 export const streaming  = writable(false);
 export const events     = writable([]);
 export const lastSeq    = writable(null);
 export const streamErr  = writable(null);
-// Set of table names known to have CDC enabled (client-tracked, persisted)
-export const cdcTables  = writable(new Set(_loadCdc()));
 
 // ── Non-reactive ──────────────────────────────────────────────────────────────
 let _handle    = null;
@@ -26,16 +23,6 @@ function _save() {
       lastSeq:      get(lastSeq),
     }));
   } catch { /* private/incognito may block */ }
-}
-
-function _loadCdc() {
-  try { return JSON.parse(localStorage.getItem(LS_CDC_KEY) || '[]'); } catch { return []; }
-}
-
-function _saveCdc() {
-  try {
-    localStorage.setItem(LS_CDC_KEY, JSON.stringify([...get(cdcTables)]));
-  } catch {}
 }
 
 // ── Stream control ────────────────────────────────────────────────────────────
@@ -75,12 +62,6 @@ export function clearEvents() {
 }
 
 export function isStreaming() { return get(streaming); }
-
-// ── CDC table tracking ────────────────────────────────────────────────────────
-export function markCdcEnabled(tableName) {
-  cdcTables.update(s => { s.add(tableName); return s; });
-  _saveCdc();
-}
 
 // ── Auto-resume on page load ──────────────────────────────────────────────────
 // Called once by EventsPanel on mount.

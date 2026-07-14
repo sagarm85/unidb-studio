@@ -1,9 +1,9 @@
 <script>
   import {
-    streaming, events, lastSeq, streamErr, cdcTables,
-    startStream, stopStream, clearEvents, markCdcEnabled, maybeResume,
+    streaming, events, lastSeq, streamErr,
+    startStream, stopStream, clearEvents, maybeResume,
   } from './eventStore.js';
-  import { enableTableEvents, runSql } from './api.js';
+  import { enableTableEvents, disableTableEvents, getCdcStatus, ackEvents, runSql } from './api.js';
   import ErrorBox from './ErrorBox.svelte';
 
   let { tables = [] } = $props();
@@ -12,29 +12,91 @@
   let fromSeq = $state('');
   let subTab  = $state('stream');  // 'stream' | 'cdc' | 'consumers'
 
-  // Consumer polling
+  // CDC status per table: Map<tableName, boolean>
+  let cdcStatus     = $state(new Map());
+  let cdcLoading    = $state(false);
+
+  // Consumer lag from engine: unidb_catalog.subscription_lag
   let consumers     = $state([]);
   let consumerTimer = null;
 
+  // Auto-ACK subscriber mode — set from URL params when opened via "Subscribe" link
+  let autoAckConsumer = $state('');
+  let autoAckMode     = $state(false);
+  let lastAckedSeq    = $state(null);
+
+  async function loadCdcStatus() {
+    cdcLoading = true;
+    const next = new Map();
+    await Promise.all(
+      userTables.map(async (t) => {
+        try {
+          const r = await getCdcStatus(t.name);
+          next.set(t.name, r.enabled);
+        } catch { next.set(t.name, false); }
+      })
+    );
+    cdcStatus = next;
+    cdcLoading = false;
+  }
+
   async function pollConsumers() {
     try {
-      // event_consumers is a regular user table managed by the demo scripts.
-      // __consumers__ is an engine system table (not written by us).
-      const res = await runSql('SELECT * FROM event_consumers ORDER BY consumer_name');
-      consumers = (res.results?.[0]?.rows ?? []).map(([name, seq, updatedAt]) => ({
-        name, seq, updatedAt,
+      // Engine-native: unidb_catalog.subscription_lag populated by POST /events/ack
+      const res = await runSql('SELECT consumer, "offset", lag_events, lag_seconds FROM unidb_catalog.subscription_lag ORDER BY consumer');
+      consumers = (res.results?.[0]?.rows ?? []).map(([name, seq, lagEvents, lagSeconds]) => ({
+        name, seq, lagEvents, lagSeconds,
       }));
-    } catch { /* table may not exist yet */ }
+    } catch { /* catalog may be empty */ }
   }
 
   $effect(() => {
-    // Auto-resume stream after page refresh
     maybeResume();
-    // Poll consumers every 2s
+    loadCdcStatus();
     pollConsumers();
     consumerTimer = setInterval(pollConsumers, 2000);
+
+    // Auto-start subscriber from URL params (opened via "Subscribe" link)
+    const params = new URLSearchParams(window.location.search);
+    const paramTable    = params.get('table') ?? '';
+    const paramConsumer = params.get('consumer') ?? '';
+    if (params.get('autostart') === '1' && paramTable) {
+      table = paramTable;
+      if (params.get('autoack') === '1' && paramConsumer) {
+        autoAckConsumer = paramConsumer;
+        autoAckMode     = true;
+      }
+      startStream({ table: paramTable, fromSeq: '' });
+    }
+
     return () => clearInterval(consumerTimer);
   });
+
+  // Auto-ACK: whenever new events arrive, ACK up to the latest seq via POST /events/ack
+  $effect(() => {
+    if (!autoAckMode || !autoAckConsumer || $events.length === 0) return;
+    const latest = $events[$events.length - 1];
+    if (latest?.seq != null && latest.seq !== lastAckedSeq) {
+      lastAckedSeq = latest.seq;
+      ackEvents(autoAckConsumer, latest.seq).catch(() => {});
+    }
+  });
+
+  // Reload CDC status whenever the user switches to that subtab
+  $effect(() => {
+    if (subTab === 'cdc') loadCdcStatus();
+  });
+
+  // Open a new browser tab as a live subscriber for the given table
+  function openSubscriber(tableName) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', 'events');
+    url.searchParams.set('table', tableName);
+    url.searchParams.set('consumer', `browser-${tableName}`);
+    url.searchParams.set('autostart', '1');
+    url.searchParams.set('autoack', '1');
+    window.open(url.toString(), '_blank');
+  }
 
   function start() { startStream({ table, fromSeq }); }
   function stop()  { stopStream(); }
@@ -46,13 +108,13 @@
   }
 
   async function enableCdc(t) {
-    try {
-      await enableTableEvents(t);
-      markCdcEnabled(t);
-    } catch (e) {
-      // If already enabled, still mark it
-      if (e.message?.toLowerCase().includes('already')) markCdcEnabled(t);
-    }
+    try { await enableTableEvents(t); } catch { /* already enabled is fine */ }
+    await loadCdcStatus();
+  }
+
+  async function disableCdc(t) {
+    try { await disableTableEvents(t); } catch { /* already off is fine */ }
+    await loadCdcStatus();
   }
 
   function opClass(op) {
@@ -112,6 +174,9 @@
           · <button class="link" onclick={resumeFromLast}>resume after seq {$lastSeq} →</button>
         {/if}
       {/if}
+      {#if autoAckMode && autoAckConsumer}
+        <span class="ack-badge">⚡ auto-ACK as <strong>{autoAckConsumer}</strong>{lastAckedSeq != null ? ` · acked seq ${lastAckedSeq}` : ''}</span>
+      {/if}
       <span class="spacer"></span>
       <span class="muted">{$events.length} event{$events.length === 1 ? '' : 's'} (max 500)</span>
     </div>
@@ -144,34 +209,46 @@
 
     <p class="section-desc">
       Change-Data-Capture must be enabled per table before the engine emits events.
-      Once enabled it is permanent for the session — there is no disable endpoint.
+      Status is read live from <code>GET /tables/{'{name}'}/events</code>.
     </p>
+
+    <div class="cdc-toolbar">
+      <button class="ghost sm" onclick={loadCdcStatus} disabled={cdcLoading}>
+        {cdcLoading ? 'Loading…' : '↻ Refresh'}
+      </button>
+    </div>
 
     <table class="info-table">
       <thead>
         <tr>
           <th>Table</th>
           <th>CDC status</th>
-          <th>Action</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
         {#each userTables as t}
-          {@const enabled = $cdcTables.has(t.name)}
+          {@const enabled = cdcStatus.get(t.name)}
           <tr>
             <td class="mono">{t.name}</td>
             <td>
-              {#if enabled}
+              {#if cdcLoading}
+                <span class="muted" style="font-size:11px">loading…</span>
+              {:else if enabled}
                 <span class="badge-enabled">● enabled</span>
               {:else}
                 <span class="badge-off">○ not enabled</span>
               {/if}
             </td>
-            <td>
+            <td class="action-cell">
               {#if !enabled}
                 <button class="ghost sm" onclick={() => enableCdc(t.name)}>Enable CDC</button>
               {:else}
-                <span class="muted" style="font-size:11px">POST /tables/{t.name}/events ✓</span>
+                <button class="ghost sm danger" onclick={() => disableCdc(t.name)}>Disable</button>
+                <button class="ghost sm subscribe" onclick={() => openSubscriber(t.name)}
+                        title="Open a live subscriber for {t.name} in a new tab — auto-ACKs consumed events">
+                  ▶ Subscribe
+                </button>
               {/if}
             </td>
           </tr>
@@ -180,7 +257,7 @@
     </table>
 
     <div class="tip-box">
-      <strong>Database-level CDC</strong> is not yet supported by the engine — enable per table above,
+      <strong>Database-level CDC</strong> is not supported — enable per table above,
       or run <code>python3 demo/events_demo.py</code> which enables CDC on <code>orders</code> automatically.
     </div>
 
@@ -188,23 +265,22 @@
   {:else}
 
     <p class="section-desc">
-      Consumer offsets are tracked in <code>event_consumers</code> — a regular user table
-      managed by the demo script. <code>__consumers__</code> is an engine system table
-      reserved for future engine-level consumer tracking (not written by Studio or demo scripts).
+      Consumer offsets from <code>unidb_catalog.subscription_lag</code> — advanced by
+      <code>POST /events/ack</code> each time a consumer durably processes events.
     </p>
 
     {#if consumers.length === 0}
       <p class="muted">
         No consumers registered yet. Run <code>python3 demo/events_demo.py</code> to register <code>demo-py</code>.
-        Make sure you have run <code>setup_schema.py</code> first to create the <code>event_consumers</code> table.
       </p>
     {:else}
       <table class="info-table">
         <thead>
           <tr>
             <th>Consumer</th>
-            <th class="num">Committed seq</th>
-            <th>Last updated</th>
+            <th class="num">Committed offset</th>
+            <th class="num">Lag (events)</th>
+            <th class="num">Lag (seconds)</th>
             <th>Replay</th>
           </tr>
         </thead>
@@ -213,7 +289,8 @@
             <tr>
               <td class="mono accent">{c.name}</td>
               <td class="num mono">{c.seq}</td>
-              <td class="muted-cell" style="font-size:12px">{c.updatedAt ?? '—'}</td>
+              <td class="num mono">{c.lagEvents ?? '—'}</td>
+              <td class="num mono">{c.lagSeconds != null ? c.lagSeconds.toFixed(1) + 's' : '—'}</td>
               <td>
                 <button class="ghost sm" onclick={() => {
                   subTab = 'stream';
@@ -229,13 +306,6 @@
         </tbody>
       </table>
     {/if}
-
-    <div class="tip-box">
-      <strong>How it works:</strong> <code>demo/events_demo.py</code> writes to
-      <code>event_consumers</code> via plain SQL after each acknowledged event.
-      <code>__consumers__</code> is owned by the engine — it will be auto-populated
-      once the engine implements native consumer ACK via the SSE API.
-    </div>
 
   {/if}
 </div>
@@ -303,8 +373,20 @@
   button.stop    { background: var(--err-fg); color: #fff; border: none; border-radius: 5px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
   button.ghost   { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 7px 12px; cursor: pointer; font-size: 13px; }
   button.ghost.sm { padding: 3px 10px; font-size: 12px; }
-  button.ghost:disabled { opacity: 0.5; cursor: default; }
+  button.ghost.danger    { color: var(--err-fg); border-color: var(--err-fg); }
+  button.ghost.subscribe { color: #16a34a; border-color: #16a34a; }
+  button.ghost:disabled  { opacity: 0.5; cursor: default; }
+  .cdc-toolbar { display: flex; justify-content: flex-end; }
+  .action-cell { display: flex; gap: 6px; }
   button.link    { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
+  .ack-badge {
+    background: rgba(22,163,74,0.1);
+    color: #16a34a;
+    border: 1px solid rgba(22,163,74,0.3);
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+  }
 
   /* Status bar */
   .status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
