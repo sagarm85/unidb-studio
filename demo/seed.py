@@ -5,13 +5,15 @@ demo/seed.py — configurable bulk seeder for the e-commerce demo schema.
 Uses POST /tables/{name}/bulk (item 32) — one txn + server-side loop per
 chunk, ~5–6× faster than the old /sql multi-row VALUES approach.
 
-Usage (release build timings; debug build ~10-50× slower):
-  python3 demo/seed.py --size 10k      # ~15 000 rows   (~15 sec)
-  python3 demo/seed.py --size 50k      # ~75 000 rows   (~75 sec)
-  python3 demo/seed.py --size 200k     # ~370 000 rows  (~6 min)
-  python3 demo/seed.py --size 1M       # ~1.86 M rows   (~28 min)
-  python3 demo/seed.py --size 5M       # ~5.0 M rows    (~75 min)
-  python3 demo/seed.py --size 10M      # ~10.0 M rows   (~2.5 h)
+Usage (release build, UNIDB_BUFFER_POOL_PAGES set generously — see
+DEMO_GUIDE.md Step 2; debug build or the 32MB default pool are each ~10-25×
+slower, so these timings do not hold without both):
+  python3 demo/seed.py --size 10k      # ~15 000 rows   (~1 sec)
+  python3 demo/seed.py --size 50k      # ~75 000 rows   (~4 sec)
+  python3 demo/seed.py --size 200k     # ~300 000 rows  (~19 sec)
+  python3 demo/seed.py --size 1M       # ~1.5 M rows    (~1.5 min)
+  python3 demo/seed.py --size 5M       # ~4.0 M rows    (~4 min)
+  python3 demo/seed.py --size 10M      # ~8.0 M rows    (~8.5 min)
 
 Prerequisites: run demo/setup_schema.py first.
 """
