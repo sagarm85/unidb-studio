@@ -17,7 +17,12 @@
   async function pollConsumers() {
     try {
       const res = await runSql('SELECT * FROM __consumers__ ORDER BY consumer_name');
-      consumers = (res.results?.[0]?.rows ?? []).map(([name, offset]) => ({ name, offset }));
+      // Deduplicate by name (no UNIQUE constraint on the system table) — keep max offset per consumer
+      const map = new Map();
+      for (const [name, offset] of (res.results?.[0]?.rows ?? [])) {
+        if (!map.has(name) || offset > map.get(name)) map.set(name, offset);
+      }
+      consumers = [...map.entries()].map(([name, offset]) => ({ name, offset }));
     } catch { /* silently ignore */ }
   }
 

@@ -83,10 +83,10 @@ _from_seq   = 0   # set by main() before starting the thread
 
 
 def _commit_offset(seq):
-    """Persist consumer offset to __consumers__ so Studio shows it live."""
-    q = (f"INSERT INTO __consumers__ (consumer_name, offset) VALUES ('{CONSUMER}', {seq}) "
-         f"ON CONFLICT (consumer_name) DO UPDATE SET offset = {seq}")
-    sql(q)
+    """Persist consumer offset to __consumers__ so Studio shows it live.
+    __consumers__ has no UNIQUE constraint so we DELETE then INSERT."""
+    sql(f"DELETE FROM __consumers__ WHERE consumer_name = '{CONSUMER}'")
+    sql(f"INSERT INTO __consumers__ (consumer_name, offset) VALUES ('{CONSUMER}', {seq})")
 
 
 def get_current_seq():
