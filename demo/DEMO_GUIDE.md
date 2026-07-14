@@ -66,13 +66,14 @@ nohup env \
   STORAGE_SECRET_KEY=minioadmin \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
-  ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 &
+  ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
   # swap release/ → debug/ only if you built the debug line above
 # To tail logs: tail -f /tmp/unidb.log
 # To stop:      pkill -f unidb-server-full
 
 # Step 3 — Studio dev server (logs → /tmp/studio.log)
-cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
+# < /dev/null prevents Vite from suspending on tty input when backgrounded
+cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
 # Open http://localhost:5173
 # To tail logs: tail -f /tmp/studio.log
 ```
