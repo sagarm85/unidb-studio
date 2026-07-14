@@ -35,9 +35,12 @@ docker compose -f docker/docker-compose.minio.yml up -d
 # MinIO console: http://localhost:9001  (minioadmin / minioadmin)
 
 # Step 2 — build engine then start in background (logs → /tmp/unidb.log)
-# Use debug/ for fast iteration, release/ for seed perf (~10-50× faster)
-cargo build -p unidb-server-full                  # debug (fast compile)
-# cargo build --release -p unidb-server-full      # release (fast runtime)
+# Release is the default: seed.py / benchmark.py / compare.py are all
+# perf-sensitive, and a debug build is ~10-50× slower on the write path
+# (index-backed constraint checks are unoptimized without --release) —
+# it LOOKS like a regression, it's just the wrong build profile.
+cargo build --release -p unidb-server-full        # release (fast runtime — use this)
+# cargo build -p unidb-server-full                # debug (fast compile; only for iterating on server source itself)
 
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
@@ -49,8 +52,8 @@ nohup env \
   STORAGE_SECRET_KEY=minioadmin \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
-  ./target/debug/unidb-server-full > /tmp/unidb.log 2>&1 &
-  # swap debug/ → release/ after a release build
+  ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 &
+  # swap release/ → debug/ only if you built the debug line above
 # To tail logs: tail -f /tmp/unidb.log
 # To stop:      pkill -f unidb-server-full
 
