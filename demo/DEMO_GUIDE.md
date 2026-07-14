@@ -33,9 +33,10 @@ UNIDB_JWT_SECRET=dev-secret \
 UNIDB_REQUEST_TIMEOUT_SECS=300 \
   ./target/debug/unidb-server-full
 
-# Terminal 2 — Studio dev server (runs in background)
-cd unidb-studio && npm run dev &
+# Terminal 2 — Studio dev server (runs in background, logs to /tmp/studio.log)
+cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
 # Open http://localhost:5173
+# To tail logs: tail -f /tmp/studio.log
 ```
 
 ### Option B — Docker (required for Postgres comparison)
