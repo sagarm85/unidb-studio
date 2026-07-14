@@ -89,13 +89,16 @@ cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
 # Create 6 tables with FK constraints
 python3 demo/setup_schema.py
 
-# Seed — start at 10k, scale up for bigger demo (release build timings)
-python3 demo/seed.py --size 10k    # ~15k rows,    ~15s
-python3 demo/seed.py --size 50k    # ~75k rows,    ~75s
-python3 demo/seed.py --size 200k   # ~370k rows,   ~6 min
-python3 demo/seed.py --size 1M     # ~1.86M rows,  ~28 min
-python3 demo/seed.py --size 5M     # ~5M rows,     ~75 min
-python3 demo/seed.py --size 10M    # ~10M rows,    ~2.5 h
+# Seed — start at 10k, scale up for bigger demo.
+# Measured end-to-end (release build, UNIDB_BUFFER_POOL_PAGES=1000000 per
+# Step 2 above, fresh schema each run) — the old estimates here predated the
+# release-build default and the buffer-pool fix and were off by ~15-25x.
+python3 demo/seed.py --size 10k    # ~15k rows,   ~1s
+python3 demo/seed.py --size 50k    # ~75k rows,   ~4s
+python3 demo/seed.py --size 200k   # ~300k rows,  ~19s
+python3 demo/seed.py --size 1M     # ~1.5M rows,  ~1.5 min
+python3 demo/seed.py --size 5M     # ~4M rows,    ~4 min
+python3 demo/seed.py --size 10M    # ~8M rows,    ~8.5 min
 ```
 
 **Studio walkthrough after seeding:**
