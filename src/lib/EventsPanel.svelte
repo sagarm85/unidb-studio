@@ -75,7 +75,8 @@
   // Auto-ACK: whenever new events arrive, ACK up to the latest seq via POST /events/ack
   $effect(() => {
     if (!autoAckMode || !autoAckConsumer || $events.length === 0) return;
-    const latest = $events[$events.length - 1];
+    // events are prepended newest-first, so $events[0] is the highest seq
+    const latest = $events[0];
     if (latest?.seq != null && latest.seq !== lastAckedSeq) {
       lastAckedSeq = latest.seq;
       ackEvents(autoAckConsumer, latest.seq).catch(() => {});
