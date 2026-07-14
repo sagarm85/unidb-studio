@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { getToken, setToken } from './api.js';
 
   // The generate flow talks to the dev server's /__token endpoint, which only
@@ -29,6 +30,10 @@
   $effect(() => {
     const id = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(id);
+  });
+
+  onMount(() => {
+    if (canGenerate && !active) generate();
   });
 
   function fmtRemaining(s) {
