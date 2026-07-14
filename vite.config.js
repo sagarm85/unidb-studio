@@ -72,4 +72,5 @@ function devTokenPlugin() {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte(), devTokenPlugin()],
+  server: { port: 5173, strictPort: true },
 })

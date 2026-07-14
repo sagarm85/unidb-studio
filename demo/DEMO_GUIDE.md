@@ -7,8 +7,10 @@ Full demo running order. Each part is independent; run them in sequence or pick 
 ## 0. Clean start
 
 ```bash
-# Kill any running processes
+# Kill any running processes and free ports
 pkill -f unidb-server-full; pkill -f vite
+lsof -ti:5173 | xargs kill -9 2>/dev/null || true
+lsof -ti:8080 | xargs kill -9 2>/dev/null || true
 
 # Wipe engine data (tables, WAL, indexes — everything)
 rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
