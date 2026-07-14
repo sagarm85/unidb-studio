@@ -264,21 +264,17 @@ click **Insert** → the 64-dim vector is placed at the cursor automatically.
 
 ```sql
 -- Use Studio → SQL editor → Embed button to generate [...] from plain text
-SELECT id, title
+-- vec_distance: lower = closer match; use it to judge result quality
+SELECT id, title, vec_distance
 FROM documents
 WHERE NEAR(embedding, [...], 3);
 ```
 
-> **`vec_distance` (relevance score) — coming soon.**
-> Once engine backlog item 41 ships, you will be able to select the computed
-> Euclidean distance and judge result quality:
-> ```sql
-> SELECT id, title, vec_distance   -- ← not yet available (backlog item 41)
-> FROM documents
-> WHERE NEAR(embedding, [...], 3);
-> -- Lower vec_distance = closer match. Distances near 0 are genuinely similar;
-> -- distances > 1.5 are likely hash-collision noise (word-hash embedding only).
-> ```
+`vec_distance` is the Euclidean distance between the stored vector and your
+query vector. Results are returned ascending (closest first). A distance below
+~1.1 indicates a genuinely similar document; above ~1.5 is likely a
+hash-collision match (word-hash embedding limitation — use sentence-transformers
+for true semantic similarity).
 
 ### Upgrade to real semantic embeddings
 

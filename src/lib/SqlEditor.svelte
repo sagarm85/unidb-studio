@@ -473,7 +473,7 @@
           <button class="embed-btn primary" onclick={insertVector} title="Insert vector at cursor position in the editor">Insert</button>
         </div>
         <div class="embed-tip">
-          {#if nonZero <= 2}Use more descriptive words to activate more dimensions and improve match accuracy.{:else}Ready — click Insert to drop the vector into your NEAR() clause.{/if}
+          {#if nonZero <= 2}Use more descriptive words to activate more dimensions and improve match accuracy.{:else}Ready — click Insert, then add <code>vec_distance</code> to your SELECT to see relevance scores (lower = closer).{/if}
         </div>
       {:else}
         <span class="embed-hint">word-hash → 64-dim vector · more words = better results · matches demo/vector_demo.py</span>
