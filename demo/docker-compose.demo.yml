@@ -1,0 +1,113 @@
+# unidb demo stack: unidb-server-full + Postgres 16 + MinIO.
+#
+# Prerequisites:
+#   Docker Desktop (or Docker Engine) installed and running.
+#   Both repos must be siblings: AI_World/unidb  and  AI_World/unidb-studio
+#
+# Start (from unidb-studio root):
+#   docker compose -f demo/docker-compose.demo.yml up -d --build
+#
+# Stop and wipe data:
+#   docker compose -f demo/docker-compose.demo.yml down -v
+#
+# Ports exposed to host:
+#   8080  unidb HTTP API   (Studio VITE_UNIDB_URL)
+#   5432  Postgres          (benchmark --pg-dsn)
+#   9000  MinIO S3 API
+#   9001  MinIO web console  (minioadmin / minioadmin)
+#
+# Env for Studio (.env.local):
+#   VITE_UNIDB_URL=http://localhost:8080
+#   VITE_UNIDB_TOKEN=<generate via npm run dev and hit the header "Generate token">
+
+name: unidb-demo
+
+services:
+
+  # ── unidb ──────────────────────────────────────────────────────────────────
+  unidb:
+    build:
+      # Build context is the engine repo — one level up from AI_World/unidb-studio,
+      # then into unidb/.
+      context: ../../unidb
+      dockerfile: docker/Dockerfile.server
+    environment:
+      # Use the same secret as the Studio dev flow so the auto-minted token works.
+      UNIDB_JWT_SECRET: dev-secret
+      UNIDB_BIND_ADDR: "0.0.0.0:8080"
+      UNIDB_DATA_DIR: /data
+      UNIDB_LOG_FORMAT: text
+      # MinIO storage (optional — remove these 4 lines to disable /storage/* routes)
+      STORAGE_BACKEND: minio
+      STORAGE_S3_ENDPOINT: http://minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: unidb
+      STORAGE_FORCE_PATH_STYLE: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - unidb-data:/data
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/stats || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # ── Postgres ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # ── MinIO ──────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  createbucket:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/unidb &&
+      echo 'bucket ready';
+      "
+
+volumes:
+  unidb-data:
+  pg-data:
+  minio-data:

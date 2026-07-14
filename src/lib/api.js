@@ -3,6 +3,7 @@
 // normalized shapes returned here, never raw fetch responses.
 
 import { buildCatalogSchema } from './schema.js';
+import { recordQuery, detectKind } from './queryStore.js';
 
 const ENV = import.meta.env ?? {};
 const RAW_URL = ENV.VITE_UNIDB_URL ?? '';
@@ -104,9 +105,15 @@ export async function runSql(sql, params = [], { txnId = null } = {}) {
   }
   const roundTripMs = performance.now() - start;
 
-  if (!res.ok) throw await toApiError(res);
+  if (!res.ok) {
+    const err = await toApiError(res);
+    recordQuery(sql, roundTripMs, 'error', 0, detectKind(sql));
+    throw err;
+  }
 
   const payload = await res.json();
+  const rowCount = (payload.results ?? []).reduce((s, r) => s + (r.rows?.length ?? 0), 0);
+  recordQuery(sql, roundTripMs, 'ok', rowCount, detectKind(sql));
   return { results: payload.results ?? [], roundTripMs };
 }
 
@@ -544,18 +551,23 @@ function parseSseFrame(frame) {
   return out;
 }
 
-// ── Storage (MinIO proxy) ──────────────────────────────────────────────────
-// All routes live under /storage/*. Returns { supported: false } on 404 so
-// the UI can show a graceful "not available" message.
+// ── Storage (item 31) ────────────────────────────────────────────────────────
+// Routes: GET/POST /storage/buckets, DELETE /storage/buckets/{name},
+//         GET /storage/{bucket}/objects, PUT/DELETE /storage/{bucket}/objects/{*key},
+//         GET /storage/{bucket}/presign/{*key}
+// Returns { supported: false } on 404 (pre-item-31 engine) or 503
+// (item-31 engine with STORAGE_BACKEND not configured).
 
 export async function listBuckets() {
   let res;
   try {
     res = await fetch(`${BASE_URL}/storage/buckets`, { headers: authHeaders() });
   } catch (e) { throw transportError(e); }
-  if (res.status === 404) return { supported: false, buckets: [] };
+  // 404 = pre-item-31 engine; 503 = item-31 but storage not configured
+  if (res.status === 404 || res.status === 503) return { supported: false, buckets: [] };
   if (!res.ok) throw await toApiError(res);
-  return { supported: true, buckets: await res.json() };
+  const j = await res.json();
+  return { supported: true, buckets: j.buckets ?? [] };
 }
 
 export async function createBucket(name, { isPublic = false } = {}) {
@@ -577,19 +589,28 @@ export async function deleteBucket(bucket) {
 export async function listObjects(bucket, prefix = '') {
   const qs = new URLSearchParams({ delimiter: '/' });
   if (prefix) qs.set('prefix', prefix);
+  // Engine route: GET /storage/{bucket}/objects (no /buckets/ segment)
   const res = await fetch(
-    `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects?${qs}`,
+    `${BASE_URL}/storage/${encodeURIComponent(bucket)}/objects?${qs}`,
     { headers: authHeaders() },
   );
   if (!res.ok) throw await toApiError(res);
-  // expected shape: { prefixes: string[], objects: [{key,size,last_modified,content_type}] }
-  return res.json();
+  const j = await res.json();
+  // Engine returns object_key + created_at_ms; normalize to key + last_modified for the UI.
+  const objects = (j.objects ?? []).map((o) => ({
+    ...o,
+    key: o.object_key,
+    last_modified: o.created_at_ms != null ? new Date(o.created_at_ms).toISOString() : null,
+  }));
+  return { prefixes: j.prefixes ?? [], objects };
 }
 
 export async function uploadObject(bucket, key, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}`);
+    // Engine route: PUT /storage/{bucket}/objects/{*key} — key may contain slashes,
+    // so encode the bucket only and leave the key's slashes as literal path segments.
+    xhr.open('PUT', `${BASE_URL}/storage/${encodeURIComponent(bucket)}/objects/${key}`);
     const h = authHeaders({ 'Content-Type': file.type || 'application/octet-stream' });
     Object.entries(h).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     if (onProgress) xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
@@ -600,20 +621,21 @@ export async function uploadObject(bucket, key, file, onProgress) {
 }
 
 export async function deleteObject(bucket, key) {
+  // Engine route: DELETE /storage/{bucket}/objects/{*key}
   const res = await fetch(
-    `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}`,
+    `${BASE_URL}/storage/${encodeURIComponent(bucket)}/objects/${key}`,
     { method: 'DELETE', headers: authHeaders() },
   );
   if (!res.ok) throw await toApiError(res);
 }
 
 export async function getObjectUrl(bucket, key, expirySecs = 3600) {
-  const qs = new URLSearchParams({ expires: String(expirySecs) });
+  // Engine route: GET /storage/{bucket}/presign/{*key} — response: { presigned_get_url }
   const res = await fetch(
-    `${BASE_URL}/storage/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(key)}/url?${qs}`,
+    `${BASE_URL}/storage/${encodeURIComponent(bucket)}/presign/${key}`,
     { headers: authHeaders() },
   );
   if (!res.ok) throw await toApiError(res);
   const j = await res.json();
-  return j.url ?? j;
+  return j.presigned_get_url;
 }

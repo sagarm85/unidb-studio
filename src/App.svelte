@@ -12,10 +12,12 @@
   import LogsPanel from './lib/LogsPanel.svelte';
   import EventsPanel from './lib/EventsPanel.svelte';
   import StoragePanel from './lib/StoragePanel.svelte';
+  import QueryPerformancePanel from './lib/QueryPerformancePanel.svelte';
+  import ComparePanel from './lib/ComparePanel.svelte';
   import { runSql } from './lib/api.js';
   import { quoteIdent } from './lib/format.js';
 
-  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs'
+  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'query-perf' | 'compare'
   let tab = $state('sql');
   let selectedTable = $state(null);
   let sql = $state('SELECT 1;');
@@ -156,6 +158,8 @@
         <button class:active={tab === 'events'} onclick={() => (tab = 'events')}>Events</button>
         <button class:active={tab === 'observability'} onclick={() => (tab = 'observability')}>Observability</button>
         <button class:active={tab === 'logs'} onclick={() => (tab = 'logs')}>Logs</button>
+        <button class:active={tab === 'query-perf'} onclick={() => (tab = 'query-perf')}>Query Performance</button>
+        <button class:active={tab === 'compare'} onclick={() => (tab = 'compare')}>Compare</button>
       </nav>
 
       <section class="panel">
@@ -187,6 +191,10 @@
           <ObservabilityPanel />
         {:else if tab === 'logs'}
           <LogsPanel />
+        {:else if tab === 'query-perf'}
+          <QueryPerformancePanel />
+        {:else if tab === 'compare'}
+          <ComparePanel />
         {/if}
       </section>
     </main>

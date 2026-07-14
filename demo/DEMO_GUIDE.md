@@ -1,0 +1,283 @@
+# unidb Studio — Demo Guide
+
+Full demo running order. Each part is independent; run them in sequence or pick any section.
+
+---
+
+## 0. Clean start
+
+```bash
+# Kill any running processes
+pkill -f unidb-server-full; pkill -f vite
+
+# Wipe engine data (tables, WAL, indexes — everything)
+rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
+
+# If using Docker demo (Postgres comparison), wipe volumes too:
+cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
+```
+
+> **"clean" means `/tmp/unidb-demo-data` is wiped.** The binary, JWT, and Studio source are untouched.
+
+---
+
+## 1. Start the stack
+
+### Option A — local binary (fastest, no Docker)
+
+```bash
+# Terminal 1 — unidb engine
+UNIDB_DATA_DIR=/tmp/unidb-demo-data \
+UNIDB_JWT_SECRET=dev-secret \
+UNIDB_REQUEST_TIMEOUT_SECS=300 \
+  ./unidb/target/debug/unidb-server-full
+
+# Terminal 2 — Studio dev server
+cd unidb-studio && npm run dev
+# Open http://localhost:5173
+```
+
+### Option B — Docker (required for Postgres comparison)
+
+```bash
+cd unidb-studio/demo
+docker-compose -f docker-compose.demo.yml up --build -d
+cd ..
+npm run dev    # Studio still runs locally; points at :8080
+```
+
+MinIO console: http://localhost:9001  (user: `minioadmin` / `minioadmin`)
+
+---
+
+## 2. E-commerce schema + seed
+
+```bash
+# Create 6 tables with FK constraints
+python3 demo/setup_schema.py
+
+# Seed — start at 10k, scale up for bigger demo
+python3 demo/seed.py --size 10k    # ~15k rows,  ~25s
+python3 demo/seed.py --size 50k    # ~75k rows,  ~2 min
+python3 demo/seed.py --size 200k   # ~370k rows, ~8 min
+```
+
+**Studio walkthrough after seeding:**
+
+| Tab | What to show |
+|-----|-------------|
+| **Schema** | Six tables with FK relationship arrows (customers → orders → order_items, etc.) |
+| **Records** | Browse `customers` table — 5k rows, pagination, column filter |
+| **SQL** | Run `SELECT p.category, SUM(oi.line_total) FROM order_items oi JOIN products p ON p.id = oi.product_id GROUP BY p.category ORDER BY 2 DESC` |
+| **Query Performance** | Engine insert p50/p99 μs (B-tree cost), SELECT latency after the JOIN above |
+| **Observability** | Live WAL bytes, commit count, buffer pool hit ratio |
+
+---
+
+## 3. Postgres comparison
+
+> Requires Docker (Option B above). Produces `public/benchmark-results.json` for the Studio Compare tab.
+
+```bash
+python3 demo/compare.py --size 10k
+# Then open Studio → Compare tab
+```
+
+The Compare tab shows horizontal bars: unidb (blue-accent) vs Postgres (blue `#336791`) per query. A verdict banner shows total time and speedup/slowdown ratio.
+
+For a more dramatic comparison run `--size 50k` or `--size 200k`.
+
+---
+
+## 4. Events / real-time CDC
+
+### What it demonstrates
+Every committed INSERT / UPDATE / DELETE fires an event on the SSE stream in **< 5 ms**. No polling — the Studio Events tab updates the moment the transaction commits.
+
+### Steps
+
+**Terminal / Studio split-screen:**
+
+1. Studio → **Events tab** → select table `orders` → click **Enable** → click **Start**
+2. In a new terminal:
+   ```bash
+   python3 demo/events_demo.py
+   ```
+3. Watch events appear in the Studio Events tab in real-time:
+   - 3 × `INSERT` events (new pending orders)
+   - 3 × `UPDATE` events (`pending → confirmed`)
+   - 1 × `DELETE` event
+
+### Manual demo in SQL editor
+
+```sql
+-- Enable CDC on orders (one-time)
+-- (done by the script, or via Studio Events tab)
+
+-- INSERT → fires event immediately
+INSERT INTO orders (id, customer_id, status, total_amount, created_at)
+VALUES (99999, 1, 'pending', 149.99, 1700000000);
+
+-- UPDATE → fires UPDATE event with before/after
+UPDATE orders SET status = 'shipped' WHERE id = 99999;
+
+-- DELETE → fires DELETE event with old row
+DELETE FROM orders WHERE id = 99999;
+```
+
+**Studio Events tab columns:** seq, table, operation (INSERT/UPDATE/DELETE), old state, new state, timestamp.
+
+---
+
+## 5. Vector search (NEAR)
+
+### What it demonstrates
+unidb stores `VECTOR(n)` columns and builds an **HNSW** approximate nearest-neighbour index. `WHERE NEAR(col, [...], k)` returns the k closest rows in **sub-millisecond** time.
+
+```bash
+python3 demo/vector_demo.py
+```
+
+**What the script does:**
+1. Creates `documents` table with `VECTOR(64)` column
+2. `CREATE INDEX USING HNSW` on the embedding column
+3. Inserts 12 product descriptions as 64-dim vectors
+4. Runs 4 search queries:
+   - "Find headphones / audio gear"
+   - "Find desk and office accessories"
+   - "Find fitness equipment"
+   - "Find air quality devices"
+5. Prints top-3 nearest neighbours per query with round-trip time
+
+**Studio SQL editor — try it live:**
+
+```sql
+-- See the documents table
+SELECT id, title FROM documents;
+
+-- Nearest-neighbour search (replace vector with any 64-dim float array)
+-- This finds "headphones / audio" cluster:
+SELECT id, title
+FROM documents
+WHERE NEAR(embedding, [0.1, 0.4, 0.0, 0.3, ...], 3);
+```
+
+### Upgrade to real semantic embeddings
+
+```python
+# Replace embed() in vector_demo.py / embed_search.py with:
+from sentence_transformers import SentenceTransformer
+_model = SentenceTransformer('all-MiniLM-L6-v2')   # 384-dim, ~80 MB
+
+def embed(text: str) -> list[float]:
+    return _model.encode(text).tolist()
+
+# Change DIM = 384, and CREATE TABLE ... embedding VECTOR(384)
+```
+
+---
+
+## 6. Document upload + embedding search
+
+### What it demonstrates
+Full pipeline: **MinIO stores raw files** → **unidb stores vectors + metadata** → `NEAR()` finds semantically similar documents → results include the MinIO object key for direct download.
+
+```bash
+# Start MinIO (either Docker compose, or local minio server)
+python3 demo/embed_search.py
+```
+
+**Pipeline steps:**
+1. Creates bucket `documents` in MinIO
+2. Uploads 6 text documents via `PUT /storage/documents/objects/{key}`
+3. Reads each document back from MinIO
+4. Generates word-hash embedding (swap for sentence-transformers in production)
+5. Stores `(id, title, source_key, snippet, embedding VECTOR(64))` in unidb
+6. Runs 4 semantic searches via `WHERE NEAR(embedding, [...], 3)`
+7. Returns results with the MinIO `source_key` so you can download originals
+
+**Studio walkthrough after the script:**
+
+| Tab | What to show |
+|-----|-------------|
+| **Storage** | `documents/` bucket → 6 text files uploaded, downloadable |
+| **Records** | `doc_embeddings` table — snippet, source_key, VECTOR values |
+| **SQL** | Run NEAR query live: `SELECT title, source_key FROM doc_embeddings WHERE NEAR(embedding, [...], 3)` |
+
+### Architecture diagram
+
+```
+User uploads PDF/TXT
+        │
+        ▼
+PUT /storage/documents/objects/key   ← MinIO stores raw bytes
+        │
+        ▼ (script or background worker reads it)
+embed(content) → [f32; 384]
+        │
+        ▼
+INSERT INTO doc_embeddings (title, source_key, embedding)
+        │
+        ▼
+WHERE NEAR(embedding, query_vec, k)  ← HNSW index answers in μs
+        │
+        ▼
+result rows contain source_key → GET /storage/documents/objects/key
+```
+
+---
+
+## 7. Benchmark queries (after seeding)
+
+```bash
+python3 demo/benchmark.py
+```
+
+Watch the **Observability tab** during the bulk UPDATE — the `update` latency gauge spikes then recovers.
+
+Sample output at 50k size:
+```
+── Benchmark queries ─────────────────────────────────────────────────────
+     12.4 ms  COUNT customers             →  5000
+      8.1 ms  COUNT orders                →  10000
+     18.6 ms  COUNT order_items           →  30000
+      7.3 ms  Orders by status (delivered) → 2018
+    142.3 ms  Top 10 customers by revenue →  10 rows
+     89.5 ms  Revenue by product category →  10 rows
+     11.2 ms  Unpaid invoices total        →  3521849.47
+      6.8 ms  Average order value          →  249.33
+
+── Bulk UPDATE ───────────────────────────────────────────────────────────
+    198.4 ms  Update 'pending' → 'confirmed'
+
+── Engine latency (μs) ───────────────────────────────────────────────────
+  insert     count=75,000  p50=4,096μ  p99=32,768μ
+  select     count=8       p50=128μ    p99=2,048μ
+  update     count=1       p50=32,768μ p99=32,768μ
+```
+
+---
+
+## Quick reference
+
+| Script | Purpose |
+|--------|---------|
+| `setup_schema.py` | Drop + recreate 6 tables with FK constraints |
+| `seed.py --size N` | Bulk seed (10k / 50k / 200k / 1M) |
+| `benchmark.py` | Run 8 representative queries + print engine stats |
+| `compare.py --size N` | Seed + benchmark unidb AND Postgres; write `public/benchmark-results.json` |
+| `events_demo.py` | Enable CDC, insert/update/delete, stream events to terminal |
+| `vector_demo.py` | Create VECTOR table, HNSW index, run NEAR() queries |
+| `embed_search.py` | Upload docs to MinIO, embed, NEAR() search + presigned download |
+
+| Studio tab | Primary use |
+|------------|-------------|
+| SQL editor | Live queries, DDL, bulk UPDATE |
+| Records | Browse table rows with pagination |
+| Schema | FK relationship graph |
+| Events | Real-time CDC event stream |
+| Observability | Engine metrics (WAL, commits, buffer pool) |
+| Logs | Structured request logs with correlation IDs |
+| Query Performance | Per-kind engine latency + browser query history |
+| Compare | unidb vs Postgres bar charts |
+| Storage | MinIO bucket/object browser + upload |
