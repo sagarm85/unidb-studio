@@ -29,11 +29,11 @@ cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 
 ```bash
 # Terminal 1 — unidb engine (without Storage tab)
-cargo build -p unidb-server-full && \
+cargo build --release -p unidb-server-full && \
 UNIDB_DATA_DIR=/tmp/unidb-demo-data \
 UNIDB_JWT_SECRET=dev-secret \
 UNIDB_REQUEST_TIMEOUT_SECS=300 \
-  ./target/debug/unidb-server-full
+  ./target/release/unidb-server-full
 
 # Terminal 2 — Studio dev server (runs in background, logs to /tmp/studio.log)
 cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
@@ -54,7 +54,7 @@ docker compose -f docker/docker-compose.minio.yml up -d
 # MinIO console: http://localhost:9001  (minioadmin / minioadmin)
 
 # Step 2 — start the engine WITH storage env vars (Terminal 1)
-cargo build -p unidb-server-full && \
+cargo build --release -p unidb-server-full && \
 UNIDB_DATA_DIR=/tmp/unidb-demo-data \
 UNIDB_JWT_SECRET=dev-secret \
 UNIDB_REQUEST_TIMEOUT_SECS=300 \
@@ -64,7 +64,7 @@ STORAGE_ACCESS_KEY=minioadmin \
 STORAGE_SECRET_KEY=minioadmin \
 STORAGE_BUCKET=unidb \
 STORAGE_FORCE_PATH_STYLE=true \
-  ./target/debug/unidb-server-full
+  ./target/release/unidb-server-full
 
 # Step 3 — Studio dev server (Terminal 2, same as before)
 cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &

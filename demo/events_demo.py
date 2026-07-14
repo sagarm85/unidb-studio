@@ -83,42 +83,27 @@ _from_seq   = 0   # set by main() before starting the thread
 
 
 def _commit_offset(seq):
-    """Persist consumer offset to event_consumers (a regular user table).
-    __consumers__ is an engine system table — we don't write to it."""
-    from datetime import datetime
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    sql(f"DELETE FROM event_consumers WHERE consumer_name = '{CONSUMER}'")
-    sql(f"INSERT INTO event_consumers (consumer_name, committed_seq, updated_at) "
-        f"VALUES ('{CONSUMER}', {seq}, '{now}')")
+    """Durably advance consumer offset via POST /events/ack (engine item 33)."""
+    req = urllib.request.Request(
+        f"{BASE}/events/ack",
+        data=json.dumps({"consumer": CONSUMER, "up_to_seq": seq}).encode(),
+        headers=HDRS, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except urllib.error.HTTPError as e:
+        print(f"  ACK ERR seq={seq}: {json.loads(e.read()).get('error')}", file=sys.stderr)
 
 
 def get_current_seq():
-    """Peek at the SSE stream briefly to find the highest committed seq."""
-    url = f"{BASE}/events/subscribe?table=orders"
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {TOKEN}",
-        "Accept": "text/event-stream",
-        "Cache-Control": "no-cache",
-    })
-    last_seq = 0
+    """GET /events/head → current highest committed seq (engine item 33)."""
+    req = urllib.request.Request(f"{BASE}/events/head", headers=HDRS)
     try:
-        with urllib.request.urlopen(req, timeout=1) as resp:
-            buf = []
-            for raw in resp:
-                line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
-                if line.startswith("data:"):
-                    buf.append(line[5:].strip())
-                elif line == "" and buf:
-                    try:
-                        evt = json.loads(" ".join(buf))
-                        if evt.get("seq"):
-                            last_seq = evt["seq"]
-                    except json.JSONDecodeError:
-                        pass
-                    buf = []
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read()).get("seq", 0)
     except Exception:
-        pass  # timeout is expected
-    return last_seq
+        return 0
 
 
 def _sse_listener():
@@ -222,8 +207,8 @@ def main():
 
     print(f"\n  ✓  {len(events_seen)} events received on the SSE stream.")
 
-    # Show committed consumer offset (same value Studio displays)
-    res  = sql(f"SELECT committed_seq FROM event_consumers WHERE consumer_name = '{CONSUMER}'")
+    # Show committed consumer offset from engine catalog (same value Studio displays)
+    res  = sql(f'SELECT "offset" FROM unidb_catalog.subscription_lag WHERE consumer = \'{CONSUMER}\'')
     rows = (res.get("results") or [{}])[0].get("rows", [])
     if rows:
         print(f"  Consumer '{CONSUMER}' committed offset: seq {rows[0][0]}")

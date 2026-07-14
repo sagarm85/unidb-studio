@@ -25,11 +25,11 @@ SQL_HDRS  = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/js
 BULK_HDRS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/x-ndjson"}
 
 # 5k rows/call for single-table ops (customers, products).
-# Larger chunks degrade per-row throughput on macOS due to F_FULLFSYNC WAL flush.
 BULK_CHUNK = 5_000
-# Orders/order_items flushed together every 1k orders; each order generates
-# 1-5 items so a batch of 1k orders yields ≤5k items — keeps calls short.
-ORD_CHUNK  = 1_000
+# Orders/order_items chunk — each order generates 1-5 items so a batch of
+# 5k orders yields ≤25k items. Kept equal to BULK_CHUNK; safe with the
+# engine's UNIDB_REQUEST_TIMEOUT_SECS=300. Reduce to 1_000 on debug builds.
+ORD_CHUNK  = 5_000
 
 # Row counts (N_CUST), rest scales proportionally:
 SIZES = {
