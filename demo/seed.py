@@ -20,14 +20,16 @@ from pathlib import Path
 
 # ── Config ───────────────────────────────────────────────────────────────────
 BASE  = "http://localhost:8080"
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE3ODQwMDk0NjJ9.bxaJIr8OLyeBxmPOFVaszPfKJF0sRxSAeUclm2G_Hbc"
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE4MTU1NDYzMzV9.8I1BTxTJgJLVd-uHt80AiS3ufAEr6MhjeA5POFwWbEI"
 SQL_HDRS  = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 BULK_HDRS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/x-ndjson"}
 
-# 5k rows/call: best rows/sec without hitting the server request timeout.
-# Larger chunks (10k+) degrade per-row throughput on macOS due to F_FULLFSYNC
-# WAL flush behaviour. On Linux Docker the limit is much higher.
+# 5k rows/call for single-table ops (customers, products).
+# Larger chunks degrade per-row throughput on macOS due to F_FULLFSYNC WAL flush.
 BULK_CHUNK = 5_000
+# Orders/order_items flushed together every 1k orders; each order generates
+# 1-5 items so a batch of 1k orders yields ≤5k items — keeps calls short.
+ORD_CHUNK  = 1_000
 
 # Row counts (N_CUST), rest scales proportionally:
 SIZES = {
@@ -82,7 +84,7 @@ def bulk_insert(table, rows_dicts, chunk=BULK_CHUNK):
         req  = urllib.request.Request(f"{BASE}/tables/{table}/bulk",
                data=body, headers=BULK_HDRS, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with urllib.request.urlopen(req, timeout=300) as r:
                 resp = json.loads(r.read())
             total += resp.get("inserted", 0)
         except urllib.error.HTTPError as e:
@@ -187,11 +189,11 @@ def main():
                           "status": rng.choice(STATUSES),
                           "total_amount": round(total, 2), "created_at": ts})
 
-        if len(ord_rows) == BULK_CHUNK:
+        if len(ord_rows) == ORD_CHUNK:
             bulk_insert("orders", ord_rows)
             bulk_insert("order_items", oi_rows)
             ord_done += len(ord_rows)
-            if ord_done % REPORT_ORD < BULK_CHUNK:
+            if ord_done % REPORT_ORD < ORD_CHUNK:
                 progress("orders", ord_done, N_ORD, t0)
             ord_rows, oi_rows = [], []
 
@@ -229,11 +231,11 @@ def main():
                              "qty": qty2, "unit_price": price2,
                              "line_total": round(qty2*price2, 2)})
 
-        if len(inv_rows) == BULK_CHUNK:
+        if len(inv_rows) == ORD_CHUNK:
             bulk_insert("invoices", inv_rows)
             bulk_insert("invoice_items", ii_rows)
             inv_done += len(inv_rows)
-            if inv_done % REPORT_INV < BULK_CHUNK:
+            if inv_done % REPORT_INV < ORD_CHUNK:
                 progress("invoices", inv_done, N_ORD, t0)
             inv_rows, ii_rows = [], []
 

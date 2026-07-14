@@ -28,7 +28,7 @@ cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 ### Option A — local binary (fastest, no Docker)
 
 ```bash
-# Terminal 1 — unidb engine
+# Terminal 1 — unidb engine (without Storage tab)
 cargo build -p unidb-server-full && \
 UNIDB_DATA_DIR=/tmp/unidb-demo-data \
 UNIDB_JWT_SECRET=dev-secret \
@@ -40,6 +40,39 @@ cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
 # Open http://localhost:5173
 # To tail logs: tail -f /tmp/studio.log
 ```
+
+#### Option A + Storage tab (MinIO)
+
+The Storage tab requires MinIO running alongside the engine.
+MinIO lives in the engine repo and has its own lightweight compose file.
+
+```bash
+# Step 1 — start MinIO (one-time; the createbucket service makes the `unidb` bucket)
+cd /path/to/unidb
+docker compose -f docker/docker-compose.minio.yml up -d
+# MinIO S3 API: http://localhost:9000
+# MinIO console: http://localhost:9001  (minioadmin / minioadmin)
+
+# Step 2 — start the engine WITH storage env vars (Terminal 1)
+cargo build -p unidb-server-full && \
+UNIDB_DATA_DIR=/tmp/unidb-demo-data \
+UNIDB_JWT_SECRET=dev-secret \
+UNIDB_REQUEST_TIMEOUT_SECS=300 \
+STORAGE_BACKEND=minio \
+STORAGE_S3_ENDPOINT=http://localhost:9000 \
+STORAGE_ACCESS_KEY=minioadmin \
+STORAGE_SECRET_KEY=minioadmin \
+STORAGE_BUCKET=unidb \
+STORAGE_FORCE_PATH_STYLE=true \
+  ./target/debug/unidb-server-full
+
+# Step 3 — Studio dev server (Terminal 2, same as before)
+cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
+```
+
+> The Storage tab will now show the `unidb` bucket. To stop MinIO:
+> `docker compose -f docker/docker-compose.minio.yml down`
+> (add `-v` to wipe stored objects too)
 
 ### Option B — Docker (required for Postgres comparison)
 

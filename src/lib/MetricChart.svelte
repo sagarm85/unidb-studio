@@ -33,14 +33,22 @@
 
   const chart = $derived.by(() => {
     const valid = points.filter(p => p.v != null);
-    if (valid.length < 2) return null;
+    if (valid.length < 1) return null;
 
+    const cur    = valid[valid.length - 1].v;
     const rawMax = Math.max(...valid.map(p => p.v));
     const yMax   = niceMax(rawMax);
     const yTicks = [0, yMax / 2, yMax];
 
     function yCo(v) { return MT + PH - (v / yMax) * PH; }
-    function xCo(i) { return ML + (i / (points.length - 1)) * PW; }
+    function xCo(i) { return ML + (points.length < 2 ? 0.5 : i / (points.length - 1)) * PW; }
+
+    // Single point: draw a horizontal reference line at the current value
+    if (valid.length < 2) {
+      const y = yCo(cur).toFixed(1);
+      const d = `M${ML},${y} L${VW - MR},${y}`;
+      return { d, yTicks, yMax, xLabels: [], yCo, cur, single: true };
+    }
 
     // Line path — handles null gaps
     let d = '';
@@ -63,18 +71,14 @@
       label: new Date(points[i].t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }));
 
-    const cur = valid[valid.length - 1].v;
-
-    return { d, yTicks, yMax, xLabels, yCo, cur };
+    return { d, yTicks, yMax, xLabels, yCo, cur, single: false };
   });
 </script>
 
 <div class="chart-card">
   <div class="chart-head">
     <span class="chart-title">{label}</span>
-    {#if chart}
-      <span class="chart-cur">{fmt(chart.cur)}</span>
-    {/if}
+    <span class="chart-cur">{chart ? fmt(chart.cur) : '—'}</span>
   </div>
 
   {#if chart}
@@ -95,8 +99,10 @@
         <text x={ML + 4} y={MT + 2} dominant-baseline="hanging" class="unit-label">{unit}</text>
       {/if}
 
-      <!-- line -->
-      <path d={chart.d} fill="none" stroke={color} stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+      <!-- line (dashed when only one point) -->
+      <path d={chart.d} fill="none" stroke={color} stroke-width="1.8"
+            stroke-linejoin="round" stroke-linecap="round"
+            stroke-dasharray={chart.single ? '4 4' : 'none'} opacity={chart.single ? 0.5 : 1}/>
 
       <!-- X-axis time labels -->
       {#each chart.xLabels as lbl}

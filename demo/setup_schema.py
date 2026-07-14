@@ -8,7 +8,7 @@ Run this ONCE before seeding. Idempotent: drops & recreates tables each time.
 import json, urllib.request, sys
 
 BASE  = "http://localhost:8080"
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE3ODQwMDk0NjJ9.bxaJIr8OLyeBxmPOFVaszPfKJF0sRxSAeUclm2G_Hbc"
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE4MTU1NDYzMzV9.8I1BTxTJgJLVd-uHt80AiS3ufAEr6MhjeA5POFwWbEI"
 HDRS  = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 

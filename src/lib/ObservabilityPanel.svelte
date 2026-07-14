@@ -32,8 +32,8 @@
           t:          now,
           activeTxns: stats.active_transactions ?? 0,
           hitRatio:   stats.bufferpool?.hit_ratio != null ? stats.bufferpool.hit_ratio * 100 : null,
-          commitsPerSec:  prevCommits  != null ? Math.max(0, (commits  - prevCommits)  / (REFRESH_MS / 1000)) : null,
-          walBytesPerSec: prevWalBytes != null ? Math.max(0, (walBytes - prevWalBytes) / (REFRESH_MS / 1000)) : null,
+          commitsPerSec:  prevCommits  != null ? Math.max(0, (commits  - prevCommits)  / (REFRESH_MS / 1000)) : 0,
+          walBytesPerSec: prevWalBytes != null ? Math.max(0, (walBytes - prevWalBytes) / (REFRESH_MS / 1000)) : 0,
           lockWaits:  stats.locks?.waits ?? 0,
         };
         prevCommits  = commits;
