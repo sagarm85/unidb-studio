@@ -489,20 +489,21 @@
   /* ── detail drawer ── */
   .drawer-backdrop {
     position: fixed; inset: 0; z-index: 40;
-    background: rgba(0,0,0,0.25);
+    background: rgba(0,0,0,0.35);
   }
   .drawer {
-    position: fixed; bottom: 0; right: 0;
-    width: min(520px, 100vw);
-    max-height: 60vh;
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(560px, 90vw);
+    max-height: 70vh;
     z-index: 50;
     background: var(--panel);
-    border-top: 1px solid var(--border);
-    border-left: 1px solid var(--border);
-    border-radius: 10px 0 0 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
     display: flex;
     flex-direction: column;
-    box-shadow: -4px -4px 24px rgba(0,0,0,0.15);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
   }
   .drawer-head {
     display: flex;
