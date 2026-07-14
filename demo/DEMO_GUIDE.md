@@ -245,12 +245,17 @@ python3 demo/vector_demo.py
    - `"air quality CO2 humidity sensor smart home"` → finds air quality devices
 5. Prints top-3 nearest neighbours per query with round-trip time
 
-**Studio SQL editor — browse the data:**
+**Studio SQL editor — try it live:**
 
 ```sql
 -- See the documents table and their stored titles
 SELECT id, title FROM documents;
 ```
+
+Then open the **SQL editor → Embed** button (toolbar, top-right of the editor).
+Type any plain-English query — e.g. `wireless headphones noise cancellation` —
+and click **Insert** to drop the pre-computed 64-dim vector straight into your
+NEAR() clause at the cursor. No terminal needed.
 
 **Low-level reference — what NEAR looks like at the SQL layer:**
 
