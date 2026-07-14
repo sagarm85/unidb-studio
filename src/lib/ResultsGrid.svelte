@@ -83,8 +83,12 @@
     dropped_table: 'Table dropped.',
   };
 
+  const ROW_DISPLAY_CAP = 1000;
+
   const rows = $derived(result?.type === 'rows' ? (result.rows ?? []) : []);
   const colCount = $derived(rows.reduce((m, r) => Math.max(m, r.length), 0));
+  const displayRows = $derived(rows.slice(0, ROW_DISPLAY_CAP));
+  const truncated = $derived(rows.length > ROW_DISPLAY_CAP);
   // Prefer server-provided column names; fall back to caller-supplied names
   // (older servers), then positional col 0..n-1 as a last resort.
   const headers = $derived.by(() => {
@@ -133,7 +137,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each rows as row, ri}
+          {#each displayRows as row, ri}
             <tr>
               {#if hasRowCol}
                 <td class="rowact">
@@ -183,8 +187,14 @@
         </tbody>
       </table>
     </div>
+    {#if truncated}
+      <p class="truncation-notice">
+        Showing first {ROW_DISPLAY_CAP.toLocaleString()} of {rows.length.toLocaleString()} rows —
+        <button class="csvbtn inline" onclick={exportCsv}>Export CSV</button> to get all rows.
+      </p>
+    {/if}
     <p class="footer">
-      <span class="muted count">{rows.length} row{rows.length === 1 ? '' : 's'}</span>
+      <span class="muted count">{rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}</span>
       <button class="csvbtn" onclick={exportCsv} title="Download these rows as CSV">Export CSV</button>
     </p>
   {/if}
@@ -361,5 +371,21 @@
   .ok {
     color: var(--accent);
     font-weight: 500;
+  }
+  .truncation-notice {
+    margin: 6px 2px 0;
+    padding: 6px 10px;
+    background: rgba(202, 138, 4, 0.08);
+    border: 1px solid rgba(202, 138, 4, 0.3);
+    border-radius: 6px;
+    font-size: 12px;
+    color: #92400e;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .csvbtn.inline {
+    padding: 1px 7px;
+    font-size: 11px;
   }
 </style>
