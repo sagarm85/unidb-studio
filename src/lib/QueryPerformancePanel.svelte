@@ -125,9 +125,9 @@
   </section>
 
   <!-- ── Recent slow queries ────────────────────────────────────────────── -->
-  {#if serverStats?.recent_slow_queries?.length}
-    <section class="card">
-      <div class="card-head"><h3>Recent slow queries  <span class="sub">(engine-reported)</span></h3></div>
+  <section class="card">
+    <div class="card-head"><h3>Recent slow queries  <span class="sub">(engine-reported)</span></h3></div>
+    {#if serverStats?.recent_slow_queries?.length}
       <table class="history-table">
         <thead><tr><th>Duration</th><th>Query</th></tr></thead>
         <tbody>
@@ -139,8 +139,10 @@
           {/each}
         </tbody>
       </table>
-    </section>
-  {/if}
+    {:else}
+      <p class="muted">No slow queries recorded yet.</p>
+    {/if}
+  </section>
 
   <!-- ── Client-side query history ──────────────────────────────────────── -->
   <section class="card">

@@ -15,19 +15,21 @@ Prerequisites: run demo/setup_schema.py first.
 """
 
 import argparse, json, random, sys, time, urllib.request, urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # ── Config ───────────────────────────────────────────────────────────────────
 BASE  = "http://localhost:8080"
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE3ODQwMDk0NjJ9.bxaJIr8OLyeBxmPOFVaszPfKJF0sRxSAeUclm2G_Hbc"
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE4MTU1NDYzMzV9.8I1BTxTJgJLVd-uHt80AiS3ufAEr6MhjeA5POFwWbEI"
 SQL_HDRS  = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 BULK_HDRS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/x-ndjson"}
 
-# 5k rows/call: best rows/sec without hitting the server request timeout.
-# Larger chunks (10k+) degrade per-row throughput on macOS due to F_FULLFSYNC
-# WAL flush behaviour. On Linux Docker the limit is much higher.
+# 5k rows/call for single-table ops (customers, products).
+# Larger chunks degrade per-row throughput on macOS due to F_FULLFSYNC WAL flush.
 BULK_CHUNK = 5_000
+# Orders/order_items flushed together every 1k orders; each order generates
+# 1-5 items so a batch of 1k orders yields ≤5k items — keeps calls short.
+ORD_CHUNK  = 1_000
 
 # Row counts (N_CUST), rest scales proportionally:
 SIZES = {
@@ -58,8 +60,8 @@ PROD_NAMES = ["Wireless Headphones","Smart Watch","Running Shoes","Coffee Maker"
               "Sunglasses","Notebook","Pen Set","Resistance Bands","Air Purifier",
               "Scented Candle","Wall Clock","Throw Blanket"]
 
-BASE_TS = int(datetime(2024, 1, 1).timestamp() * 1000)
-DAY_MS  = 86_400_000
+BASE_DT = datetime(2024, 1, 1)
+_SEC    = timedelta(seconds=1)
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -82,7 +84,7 @@ def bulk_insert(table, rows_dicts, chunk=BULK_CHUNK):
         req  = urllib.request.Request(f"{BASE}/tables/{table}/bulk",
                data=body, headers=BULK_HDRS, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with urllib.request.urlopen(req, timeout=300) as r:
                 resp = json.loads(r.read())
             total += resp.get("inserted", 0)
         except urllib.error.HTTPError as e:
@@ -94,7 +96,8 @@ def bulk_insert(table, rows_dicts, chunk=BULK_CHUNK):
 
 
 def rand_ts(rng, lo=0, hi=730):
-    return BASE_TS - rng.randint(lo * DAY_MS, hi * DAY_MS)
+    delta_secs = rng.randint(lo * 86400, hi * 86400)
+    return (BASE_DT - timedelta(seconds=delta_secs)).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def progress(label, done, total, t0):
@@ -187,11 +190,11 @@ def main():
                           "status": rng.choice(STATUSES),
                           "total_amount": round(total, 2), "created_at": ts})
 
-        if len(ord_rows) == BULK_CHUNK:
+        if len(ord_rows) == ORD_CHUNK:
             bulk_insert("orders", ord_rows)
             bulk_insert("order_items", oi_rows)
             ord_done += len(ord_rows)
-            if ord_done % REPORT_ORD < BULK_CHUNK:
+            if ord_done % REPORT_ORD < ORD_CHUNK:
                 progress("orders", ord_done, N_ORD, t0)
             ord_rows, oi_rows = [], []
 
@@ -211,13 +214,15 @@ def main():
     for i in range(N_ORD):
         inv_id += 1
         oid    = i + 1
-        issued = BASE_TS - rng2.randint(0, 365 * DAY_MS)
-        due    = issued + 30 * DAY_MS
-        paid   = issued + rng2.randint(1, 25) * DAY_MS if rng2.random() < 0.75 else None
-        istatus = "paid" if paid else ("overdue" if rng2.random() < 0.3 else "issued")
+        issued_dt = BASE_DT - timedelta(seconds=rng2.randint(0, 365 * 86400))
+        due_dt    = issued_dt + timedelta(days=30)
+        paid_dt   = issued_dt + timedelta(days=rng2.randint(1, 25)) if rng2.random() < 0.75 else None
+        istatus   = "paid" if paid_dt else ("overdue" if rng2.random() < 0.3 else "issued")
         inv_rows.append({"id": inv_id, "order_id": oid,
             "invoice_number": f"INV-{inv_id:08d}",
-            "issued_at": issued, "due_at": due, "paid_at": paid,
+            "issued_at": issued_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "due_at":    due_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "paid_at":   paid_dt.strftime('%Y-%m-%d %H:%M:%S') if paid_dt else None,
             "total_amount": round(rng2.uniform(10, 5000), 2), "status": istatus})
         for _ in range(rng2.randint(1, 3)):
             ii_id += 1
@@ -229,11 +234,11 @@ def main():
                              "qty": qty2, "unit_price": price2,
                              "line_total": round(qty2*price2, 2)})
 
-        if len(inv_rows) == BULK_CHUNK:
+        if len(inv_rows) == ORD_CHUNK:
             bulk_insert("invoices", inv_rows)
             bulk_insert("invoice_items", ii_rows)
             inv_done += len(inv_rows)
-            if inv_done % REPORT_INV < BULK_CHUNK:
+            if inv_done % REPORT_INV < ORD_CHUNK:
                 progress("invoices", inv_done, N_ORD, t0)
             inv_rows, ii_rows = [], []
 

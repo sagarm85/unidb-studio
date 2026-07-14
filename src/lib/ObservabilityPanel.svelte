@@ -3,6 +3,7 @@
   import { formatMicros, formatCount, formatDuration } from './format.js';
   import ErrorBox from './ErrorBox.svelte';
   import MetricChart from './MetricChart.svelte';
+  import { queryHistory } from './queryStore.js';
 
   const REFRESH_MS = 5000;
   const MAX_HISTORY = 60; // 5 min at 5s intervals
@@ -32,8 +33,8 @@
           t:          now,
           activeTxns: stats.active_transactions ?? 0,
           hitRatio:   stats.bufferpool?.hit_ratio != null ? stats.bufferpool.hit_ratio * 100 : null,
-          commitsPerSec:  prevCommits  != null ? Math.max(0, (commits  - prevCommits)  / (REFRESH_MS / 1000)) : null,
-          walBytesPerSec: prevWalBytes != null ? Math.max(0, (walBytes - prevWalBytes) / (REFRESH_MS / 1000)) : null,
+          commitsPerSec:  prevCommits  != null ? Math.max(0, (commits  - prevCommits)  / (REFRESH_MS / 1000)) : 0,
+          walBytesPerSec: prevWalBytes != null ? Math.max(0, (walBytes - prevWalBytes) / (REFRESH_MS / 1000)) : 0,
           lockWaits:  stats.locks?.waits ?? 0,
         };
         prevCommits  = commits;
@@ -94,6 +95,13 @@
   function fmtPct(v) {
     if (v == null) return '—';
     return `${v.toFixed(1)}%`;
+  }
+  function relTime(iso) {
+    const diff = Date.now() - new Date(iso).getTime();
+    if (diff < 2000)    return 'just now';
+    if (diff < 60000)   return `${Math.floor(diff / 1000)}s ago`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    return new Date(iso).toLocaleTimeString();
   }
 </script>
 
@@ -346,6 +354,41 @@
         {/if}
       </section>
 
+      <!-- Client-side query history -->
+      <section class="card wide">
+        <div class="card-head-row">
+          <h4>Query history <span class="hint">browser round-trip time · this session</span></h4>
+          <button class="btn-clear" onclick={() => queryHistory.set([])}>Clear</button>
+        </div>
+        {#if $queryHistory.length === 0}
+          <p class="muted no-slow">No queries yet — run SQL from the editor or Record Browser.</p>
+        {:else}
+          <table class="perf-table">
+            <thead>
+              <tr>
+                <th style="width:80px">When</th>
+                <th style="width:60px">Kind</th>
+                <th class="num" style="width:90px">Duration</th>
+                <th class="num" style="width:60px">Rows</th>
+                <th>SQL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each $queryHistory as q (q.id)}
+                {@const dur = q.durationMs}
+                <tr class:err-row={q.status === 'error'}>
+                  <td class="mono muted-cell">{relTime(q.timestamp)}</td>
+                  <td><span class="kind-chip {q.kind}">{q.kind}</span></td>
+                  <td class="num mono" class:dur-fast={dur < 50} class:dur-ok={dur >= 50 && dur < 500} class:dur-slow={dur >= 500}>{dur} ms</td>
+                  <td class="num mono muted-cell">{q.rowCount > 0 ? q.rowCount : '—'}</td>
+                  <td class="mono sql" title={q.sql}>{q.sql}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </section>
+
     {/if}
   {/if}
 </div>
@@ -537,6 +580,28 @@
     font-weight: 700;
   }
   .no-slow { margin: 4px 0; font-size: 13px; }
+  .card-head-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .card-head-row h4 { margin: 0; }
+  .btn-clear {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .btn-clear:hover { color: var(--text); }
+  .muted-cell { color: var(--muted); }
+  .err-row td { background: var(--err-bg, rgba(239,68,68,.05)); }
+  .dur-fast { color: #22c55e; }
+  .dur-ok   { color: #f59e0b; }
+  .dur-slow { color: #ef4444; }
   .muted { color: var(--muted); font-size: 13px; }
   /* ── time-series charts ── */
   .chart-grid {
