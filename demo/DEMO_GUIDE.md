@@ -257,26 +257,28 @@ Type any plain-English query — e.g. `wireless headphones noise cancellation` �
 and click **Insert** to drop the pre-computed 64-dim vector straight into your
 NEAR() clause at the cursor. No terminal needed.
 
-**Low-level reference — what NEAR looks like at the SQL layer:**
+**Try it live in the SQL editor:**
 
-The vector below is what `embed("wireless headphones noise cancellation")` produces.
-In real applications this vector comes from your backend, not typed by hand.
+Use the **Embed** button in the SQL editor toolbar: type your search text →
+click **Insert** → the 64-dim vector is placed at the cursor automatically.
 
 ```sql
--- Developer reference: raw NEAR syntax (vector pre-computed by application code)
--- embed("wireless headphones noise cancellation") → this 64-dim vector:
--- vec_distance shows how close each result is (lower = closer match)
-SELECT id, title, vec_distance
+-- Use Studio → SQL editor → Embed button to generate [...] from plain text
+SELECT id, title
 FROM documents
-WHERE NEAR(embedding, [0.0, 0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 3);
+WHERE NEAR(embedding, [...], 3);
 ```
+
+> **`vec_distance` (relevance score) — coming soon.**
+> Once engine backlog item 41 ships, you will be able to select the computed
+> Euclidean distance and judge result quality:
+> ```sql
+> SELECT id, title, vec_distance   -- ← not yet available (backlog item 41)
+> FROM documents
+> WHERE NEAR(embedding, [...], 3);
+> -- Lower vec_distance = closer match. Distances near 0 are genuinely similar;
+> -- distances > 1.5 are likely hash-collision noise (word-hash embedding only).
+> ```
 
 ### Upgrade to real semantic embeddings
 

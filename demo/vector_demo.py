@@ -179,15 +179,14 @@ def main():
         q_lit  = json.dumps(q_vec)
         t0     = time.perf_counter()
         res    = sql(
-            f"SELECT id, title, vec_distance FROM documents WHERE NEAR(embedding, {q_lit}, 3)",
+            f"SELECT id, title FROM documents WHERE NEAR(embedding, {q_lit}, 3)",
             quiet=True,
         )
         ms  = (time.perf_counter() - t0) * 1000
         rows = (res.get("results") or [{}])[0].get("rows", [])
         print(f"\n  Query: \"{q_label}\"  ({ms:.1f} ms round-trip)")
         for r in rows:
-            dist = f"  dist={float(r[2]):.3f}" if r[2] is not None else ""
-            print(f"    → [{r[0]}] {r[1]}{dist}")
+            print(f"    → [{r[0]}] {r[1]}")
 
     # ── Engine stats ──────────────────────────────────────────────────────────
     print("\n── Engine select latency (from /stats) ──────────────────────────────")
