@@ -77,9 +77,11 @@ def enable_events(table):
 events_seen = []
 _stop = threading.Event()
 
+CONSUMER = "demo-py"   # named consumer — engine persists offset in __consumers__
+
 def _sse_listener():
     """Reads the raw SSE stream line-by-line (no external library needed)."""
-    url = f"{BASE}/events/subscribe?table=orders"
+    url = f"{BASE}/events/subscribe?table=orders&consumer={CONSUMER}"
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {TOKEN}",
         "Accept": "text/event-stream",
@@ -166,7 +168,17 @@ def main():
     _stop.set()
 
     print(f"\n  ✓  {len(events_seen)} events received on the SSE stream.")
-    print("  Open Studio → Events tab to see the same stream in real-time.\n")
+
+    # Show committed consumer offset (same value Studio displays)
+    res = sql(f"SELECT offset FROM __consumers__ WHERE consumer_name = '{CONSUMER}'",
+              "consumer offset")
+    rows = (res.get("results") or [{}])[0].get("rows", [])
+    if rows:
+        print(f"  Consumer '{CONSUMER}' committed offset: seq {rows[0][0]}")
+    else:
+        print(f"  Consumer '{CONSUMER}' not yet in __consumers__ (engine may not track ephemeral offset)")
+
+    print("  Open Studio → Events tab — the consumer offset bar updates live.\n")
 
 
 if __name__ == "__main__":

@@ -1,86 +1,65 @@
 <script>
-  // Events tab (Milestone 20). Live change-event viewer over the ephemeral
-  // SSE tail (GET /events/subscribe, no consumer → at-most-once browser tail).
-  // Supports per-table enable (POST /tables/{t}/events), table filter,
-  // offset scrubbing / replay-from-offset via `from_seq`, and auto-resume on
-  // reconnect through the Last-Event-ID header (handled in openEventStream).
-  import { openEventStream, enableTableEvents } from './api.js';
+  import { streaming, events, lastSeq, streamErr, startStream, stopStream, clearEvents } from './eventStore.js';
+  import { enableTableEvents, runSql } from './api.js';
   import ErrorBox from './ErrorBox.svelte';
 
   let { tables = [] } = $props();
 
-  const MAX_ROWS = 500; // bound the in-memory buffer
-
-  let table = $state(''); // '' = all enabled tables
-  let fromSeq = $state(''); // offset to (re)start strictly after
-  let events = $state([]); // newest first
-  let streaming = $state(false);
-  let error = $state(null);
-  let lastSeq = $state(null); // highest seq seen — the live cursor
+  let table    = $state('');
+  let fromSeq  = $state('');
   let enabling = $state(false);
-  let notice = $state(null);
+  let notice   = $state(null);
 
-  let handle = null; // active stream { close }
+  // Consumer offset polling
+  let consumers     = $state([]);
+  let consumerTimer = null;
+
+  async function pollConsumers() {
+    try {
+      const res = await runSql('SELECT consumer_name, offset FROM __consumers__ ORDER BY consumer_name');
+      consumers = (res.results?.[0]?.rows ?? []).map(([name, offset]) => ({ name, offset }));
+    } catch { /* silently ignore */ }
+  }
+
+  $effect(() => {
+    pollConsumers();
+    consumerTimer = setInterval(pollConsumers, 2000);
+    return () => clearInterval(consumerTimer);
+  });
 
   function start() {
-    stop();
-    error = null;
-    const opts = {
-      table: table || undefined,
-      fromSeq: fromSeq !== '' ? Number(fromSeq) : undefined,
-      onOpen: () => { streaming = true; },
-      onEvent: (evt) => {
-        lastSeq = evt.seq;
-        events = [evt, ...events].slice(0, MAX_ROWS);
-      },
-      onError: (e) => {
-        error = { code: e.code, message: e.message, status: e.status };
-        streaming = false;
-      },
-    };
-    // On an explicit restart we honor the typed from_seq; the stream's own
-    // reconnect uses Last-Event-ID past lastSeq automatically.
-    handle = openEventStream(opts);
+    startStream({ table, fromSeq });
   }
 
   function stop() {
-    handle?.close();
-    handle = null;
-    streaming = false;
+    stopStream();
   }
 
-  function clear() {
-    events = [];
-    lastSeq = null;
-  }
-
-  // Resume exactly after the last event we saw (offset scrubbing convenience).
   function resumeFromLast() {
-    if (lastSeq != null) fromSeq = String(lastSeq);
-    start();
+    const seq = $lastSeq;
+    if (seq != null) fromSeq = String(seq);
+    startStream({ table, fromSeq });
   }
 
   async function enable() {
     if (!table) return;
     enabling = true;
-    error = null;
-    notice = null;
+    notice   = null;
     try {
       await enableTableEvents(table);
       notice = `Event capture enabled on "${table}".`;
     } catch (e) {
-      error = { code: e.code, message: e.message, status: e.status };
+      // streamErr is for stream errors; use local notice for enable errors
+      notice = `Error: ${e.message}`;
     } finally {
       enabling = false;
     }
   }
 
-  // Tear the stream down when the tab unmounts.
-  $effect(() => () => stop());
-
   function opClass(op) {
     return op === 'insert' ? 'op-insert' : op === 'update' ? 'op-update' : 'op-delete';
   }
+
   const userTables = $derived(tables.filter((t) => !/^__/.test(t.name)));
 </script>
 
@@ -90,7 +69,7 @@
     <div class="controls">
       <label>
         Table
-        <select bind:value={table} disabled={streaming}>
+        <select bind:value={table} disabled={$streaming}>
           <option value="">all enabled</option>
           {#each userTables as t}
             <option value={t.name}>{t.name}</option>
@@ -99,9 +78,9 @@
       </label>
       <label>
         From seq
-        <input type="number" min="0" placeholder="latest" bind:value={fromSeq} disabled={streaming} />
+        <input type="number" min="0" placeholder="latest" bind:value={fromSeq} disabled={$streaming} />
       </label>
-      {#if !streaming}
+      {#if !$streaming}
         <button class="primary" onclick={start}>▶ Start tail</button>
       {:else}
         <button class="stop" onclick={stop}>■ Stop</button>
@@ -109,36 +88,49 @@
       <button class="ghost" onclick={enable} disabled={!table || enabling}>
         {enabling ? 'Enabling…' : 'Enable capture'}
       </button>
-      <button class="link" onclick={clear} disabled={!events.length}>Clear</button>
+      <button class="link" onclick={clearEvents} disabled={!$events.length}>Clear</button>
     </div>
   </div>
 
   <div class="status">
-    <span class="dot" class:on={streaming}></span>
-    {#if streaming}
-      Live{table ? ` · ${table}` : ''}{lastSeq != null ? ` · seq ${lastSeq}` : ''}
+    <span class="dot" class:on={$streaming}></span>
+    {#if $streaming}
+      Live{table ? ` · ${table}` : ''}{$lastSeq != null ? ` · seq ${$lastSeq}` : ''}
     {:else}
       Stopped
-      {#if lastSeq != null}
-        · <button class="link" onclick={resumeFromLast}>resume after seq {lastSeq} →</button>
+      {#if $lastSeq != null}
+        · <button class="link" onclick={resumeFromLast}>resume after seq {$lastSeq} →</button>
       {/if}
     {/if}
     <span class="spacer"></span>
-    <span class="muted">{events.length} event{events.length === 1 ? '' : 's'} (max {MAX_ROWS})</span>
+    <span class="muted">{$events.length} event{$events.length === 1 ? '' : 's'} (max 500)</span>
   </div>
 
   {#if notice}<div class="notice">{notice}</div>{/if}
-  {#if error}
-    <ErrorBox {error} />
+  {#if $streamErr}
+    <ErrorBox error={$streamErr} />
     <p class="muted">
-      A stream error can mean the table has no event capture enabled (use “Enable capture”),
+      A stream error can mean the table has no event capture enabled (use "Enable capture"),
       or the server predates Milestone&nbsp;20.
     </p>
   {/if}
 
-  {#if events.length}
+  <!-- Consumer offsets -->
+  {#if consumers.length > 0}
+    <section class="consumers">
+      <span class="consumers-label">Consumer offsets</span>
+      {#each consumers as c}
+        <span class="consumer-chip">
+          <span class="consumer-name">{c.name}</span>
+          <span class="consumer-offset">seq {c.offset}</span>
+        </span>
+      {/each}
+    </section>
+  {/if}
+
+  {#if $events.length}
     <div class="stream">
-      {#each events as e (e.seq)}
+      {#each $events as e (e.seq)}
         <div class="evt">
           <span class="seq">#{e.seq}</span>
           <span class="op {opClass(e.op)}">{e.op}</span>
@@ -148,9 +140,9 @@
         </div>
       {/each}
     </div>
-  {:else if !streaming}
+  {:else if !$streaming}
     <p class="muted">
-      Pick a table (or “all enabled”), then <strong>Start tail</strong> to watch committed
+      Pick a table (or "all enabled"), then <strong>Start tail</strong> to watch committed
       INSERT/UPDATE/DELETE events live. Set <em>From seq</em> to replay from an earlier offset.
     </p>
   {:else}
@@ -218,10 +210,7 @@
     cursor: pointer;
     font-size: 13px;
   }
-  button.ghost:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+  button.ghost:disabled { opacity: 0.5; cursor: default; }
   button.link {
     background: none;
     border: none;
@@ -240,24 +229,56 @@
   .spacer { flex: 1; }
   .muted { color: var(--muted); font-size: 13px; }
   .dot {
-    width: 8px;
-    height: 8px;
+    width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--muted);
     display: inline-block;
   }
   .dot.on {
     background: #22c55e;
-    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
+    box-shadow: 0 0 0 3px rgba(34,197,94,.2);
   }
   .notice {
     font-size: 13px;
-    color: var(--text);
     background: var(--panel-alt);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px 12px;
   }
+
+  /* Consumer offsets bar */
+  .consumers {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 7px 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  .consumers-label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    font-weight: 600;
+    margin-right: 4px;
+  }
+  .consumer-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+  }
+  .consumer-name { font-family: var(--mono); color: var(--accent); }
+  .consumer-offset { color: var(--muted); font-family: var(--mono); }
+
+  /* Event stream */
   .stream {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -274,10 +295,7 @@
     white-space: nowrap;
   }
   .evt:hover { background: var(--panel-alt); }
-  .seq {
-    flex: 0 0 auto;
-    color: var(--muted);
-  }
+  .seq { flex: 0 0 auto; color: var(--muted); }
   .op {
     flex: 0 0 58px;
     font-weight: 700;
@@ -287,15 +305,8 @@
   .op-insert { color: #16a34a; }
   .op-update { color: #d99922; }
   .op-delete { color: var(--err-fg); }
-  .tbl {
-    flex: 0 0 auto;
-    color: var(--accent);
-  }
-  .xid {
-    flex: 0 0 auto;
-    color: var(--muted);
-    font-size: 11px;
-  }
+  .tbl  { flex: 0 0 auto; color: var(--accent); }
+  .xid  { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
   .payload {
     flex: 1;
     overflow: hidden;
