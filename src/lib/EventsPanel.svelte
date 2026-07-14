@@ -16,7 +16,7 @@
 
   async function pollConsumers() {
     try {
-      const res = await runSql('SELECT consumer_name, offset FROM __consumers__ ORDER BY consumer_name');
+      const res = await runSql('SELECT * FROM __consumers__ ORDER BY consumer_name');
       consumers = (res.results?.[0]?.rows ?? []).map(([name, offset]) => ({ name, offset }));
     } catch { /* silently ignore */ }
   }

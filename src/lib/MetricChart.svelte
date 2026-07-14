@@ -73,6 +73,33 @@
 
     return { d, yTicks, yMax, xLabels, yCo, cur, single: false };
   });
+
+  // Hover tooltip
+  let hover = $state(null); // { x, y, value, time } in SVG coords
+
+  function onMouseMove(e) {
+    if (!chart || chart.single) return;
+    const svg   = e.currentTarget;
+    const rect  = svg.getBoundingClientRect();
+    // Convert mouse X to SVG user units
+    const svgX  = ((e.clientX - rect.left) / rect.width) * VW;
+    if (svgX < ML || svgX > VW - MR) { hover = null; return; }
+    // Find nearest point index
+    const ratio = (svgX - ML) / PW;
+    const idx   = Math.round(ratio * (points.length - 1));
+    const pt    = points[Math.max(0, Math.min(idx, points.length - 1))];
+    if (pt.v == null) { hover = null; return; }
+    const xCo  = (i) => ML + (i / (points.length - 1)) * PW;
+    const hx   = xCo(idx);
+    const hy   = chart.yCo(pt.v);
+    hover = {
+      x:     hx,
+      y:     hy,
+      value: fmt(pt.v),
+      time:  new Date(pt.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      flip:  hx > VW * 0.65, // flip tooltip to left when near right edge
+    };
+  }
 </script>
 
 <div class="chart-card">
@@ -82,7 +109,8 @@
   </div>
 
   {#if chart}
-    <svg viewBox="0 0 {VW} {VH}" preserveAspectRatio="none" class="chart-svg">
+    <svg viewBox="0 0 {VW} {VH}" preserveAspectRatio="none" class="chart-svg"
+         onmousemove={onMouseMove} onmouseleave={() => (hover = null)}>
       <!-- horizontal grid lines + Y labels -->
       {#each chart.yTicks as tick}
         {@const y = chart.yCo(tick).toFixed(1)}
@@ -113,6 +141,20 @@
       <line x1={ML} x2={VW - MR} y1={MT + PH} y2={MT + PH} stroke="var(--border)" stroke-width="1"/>
       <!-- Y axis line -->
       <line x1={ML} x2={ML} y1={MT} y2={MT + PH} stroke="var(--border)" stroke-width="1"/>
+
+      <!-- Hover crosshair + tooltip -->
+      {#if hover}
+        <line x1={hover.x} x2={hover.x} y1={MT} y2={MT + PH}
+              stroke={color} stroke-width="1" stroke-dasharray="3 3" opacity="0.6"/>
+        <circle cx={hover.x} cy={hover.y} r="4" fill={color} stroke="var(--panel)" stroke-width="1.5"/>
+        {@const tx = hover.flip ? hover.x - 8 : hover.x + 8}
+        {@const anchor = hover.flip ? 'end' : 'start'}
+        <rect x={hover.flip ? tx - 92 : tx} y={hover.y - 22}
+              width="92" height="36" rx="4"
+              fill="var(--panel)" stroke="var(--border)" stroke-width="1"/>
+        <text x={tx} y={hover.y - 6} text-anchor={anchor} class="tip-val">{hover.value}</text>
+        <text x={tx} y={hover.y + 10} text-anchor={anchor} class="tip-time">{hover.time}</text>
+      {/if}
     </svg>
   {:else}
     <div class="chart-empty">Collecting data…</div>
@@ -162,6 +204,18 @@
     fill: var(--muted);
     font-family: ui-monospace, monospace;
   }
+  .tip-val {
+    font-size: 11px;
+    font-weight: 700;
+    fill: var(--text);
+    font-family: ui-monospace, monospace;
+  }
+  .tip-time {
+    font-size: 10px;
+    fill: var(--muted);
+    font-family: ui-monospace, monospace;
+  }
+  .chart-svg { cursor: crosshair; }
   .chart-empty {
     height: 160px;
     display: flex;
