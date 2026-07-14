@@ -5,11 +5,13 @@ demo/seed.py — configurable bulk seeder for the e-commerce demo schema.
 Uses POST /tables/{name}/bulk (item 32) — one txn + server-side loop per
 chunk, ~5–6× faster than the old /sql multi-row VALUES approach.
 
-Usage:
-  python3 demo/seed.py --size 10k      # ~15 000 rows  (~15 sec)
-  python3 demo/seed.py --size 50k      # ~75 000 rows  (~75 sec)
-  python3 demo/seed.py --size 200k     # ~370 000 rows (~6 min)
-  python3 demo/seed.py --size 1M       # ~1.86 M rows  (~28 min)
+Usage (release build timings; debug build ~10-50× slower):
+  python3 demo/seed.py --size 10k      # ~15 000 rows   (~15 sec)
+  python3 demo/seed.py --size 50k      # ~75 000 rows   (~75 sec)
+  python3 demo/seed.py --size 200k     # ~370 000 rows  (~6 min)
+  python3 demo/seed.py --size 1M       # ~1.86 M rows   (~28 min)
+  python3 demo/seed.py --size 5M       # ~5.0 M rows    (~75 min)
+  python3 demo/seed.py --size 10M      # ~10.0 M rows   (~2.5 h)
 
 Prerequisites: run demo/setup_schema.py first.
 """
@@ -37,7 +39,9 @@ SIZES = {
     "50k":  5_000,
     "200k": 20_000,
     "500k": 50_000,
-    "1m":   100_000, "1M": 100_000,
+    "1m":   100_000,  "1M":  100_000,
+    "5m":   270_000,  "5M":  270_000,   # ~5.0 M rows
+    "10m":  540_000,  "10M": 540_000,   # ~10.0 M rows
 }
 
 # ── Reference data ────────────────────────────────────────────────────────────

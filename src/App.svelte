@@ -17,7 +17,9 @@
   import { quoteIdent } from './lib/format.js';
 
   // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare'
-  let tab = $state('sql');
+  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare']);
+  const _urlTab = new URLSearchParams(window.location.search).get('tab') ?? '';
+  let tab = $state(VALID_TABS.has(_urlTab) ? _urlTab : 'sql');
   let selectedTable = $state(null);
   let sql = $state('SELECT 1;');
   let paramsText = $state('');

@@ -3,7 +3,7 @@
     streaming, events, lastSeq, streamErr,
     startStream, stopStream, clearEvents, maybeResume,
   } from './eventStore.js';
-  import { enableTableEvents, disableTableEvents, getCdcStatus, runSql } from './api.js';
+  import { enableTableEvents, disableTableEvents, getCdcStatus, ackEvents, runSql } from './api.js';
   import ErrorBox from './ErrorBox.svelte';
 
   let { tables = [] } = $props();
@@ -19,6 +19,11 @@
   // Consumer lag from engine: unidb_catalog.subscription_lag
   let consumers     = $state([]);
   let consumerTimer = null;
+
+  // Auto-ACK subscriber mode — set from URL params when opened via "Subscribe" link
+  let autoAckConsumer = $state('');
+  let autoAckMode     = $state(false);
+  let lastAckedSeq    = $state(null);
 
   async function loadCdcStatus() {
     cdcLoading = true;
@@ -47,16 +52,51 @@
 
   $effect(() => {
     maybeResume();
-    loadCdcStatus();           // auto-load on mount
+    loadCdcStatus();
     pollConsumers();
     consumerTimer = setInterval(pollConsumers, 2000);
+
+    // Auto-start subscriber from URL params (opened via "Subscribe" link)
+    const params = new URLSearchParams(window.location.search);
+    const paramTable    = params.get('table') ?? '';
+    const paramConsumer = params.get('consumer') ?? '';
+    if (params.get('autostart') === '1' && paramTable) {
+      table = paramTable;
+      if (params.get('autoack') === '1' && paramConsumer) {
+        autoAckConsumer = paramConsumer;
+        autoAckMode     = true;
+      }
+      startStream({ table: paramTable, fromSeq: '' });
+    }
+
     return () => clearInterval(consumerTimer);
+  });
+
+  // Auto-ACK: whenever new events arrive, ACK up to the latest seq via POST /events/ack
+  $effect(() => {
+    if (!autoAckMode || !autoAckConsumer || $events.length === 0) return;
+    const latest = $events[$events.length - 1];
+    if (latest?.seq != null && latest.seq !== lastAckedSeq) {
+      lastAckedSeq = latest.seq;
+      ackEvents(autoAckConsumer, latest.seq).catch(() => {});
+    }
   });
 
   // Reload CDC status whenever the user switches to that subtab
   $effect(() => {
     if (subTab === 'cdc') loadCdcStatus();
   });
+
+  // Open a new browser tab as a live subscriber for the given table
+  function openSubscriber(tableName) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', 'events');
+    url.searchParams.set('table', tableName);
+    url.searchParams.set('consumer', `browser-${tableName}`);
+    url.searchParams.set('autostart', '1');
+    url.searchParams.set('autoack', '1');
+    window.open(url.toString(), '_blank');
+  }
 
   function start() { startStream({ table, fromSeq }); }
   function stop()  { stopStream(); }
@@ -134,6 +174,9 @@
           · <button class="link" onclick={resumeFromLast}>resume after seq {$lastSeq} →</button>
         {/if}
       {/if}
+      {#if autoAckMode && autoAckConsumer}
+        <span class="ack-badge">⚡ auto-ACK as <strong>{autoAckConsumer}</strong>{lastAckedSeq != null ? ` · acked seq ${lastAckedSeq}` : ''}</span>
+      {/if}
       <span class="spacer"></span>
       <span class="muted">{$events.length} event{$events.length === 1 ? '' : 's'} (max 500)</span>
     </div>
@@ -202,6 +245,10 @@
                 <button class="ghost sm" onclick={() => enableCdc(t.name)}>Enable CDC</button>
               {:else}
                 <button class="ghost sm danger" onclick={() => disableCdc(t.name)}>Disable</button>
+                <button class="ghost sm subscribe" onclick={() => openSubscriber(t.name)}
+                        title="Open a live subscriber for {t.name} in a new tab — auto-ACKs consumed events">
+                  ▶ Subscribe
+                </button>
               {/if}
             </td>
           </tr>
@@ -326,11 +373,20 @@
   button.stop    { background: var(--err-fg); color: #fff; border: none; border-radius: 5px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
   button.ghost   { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 7px 12px; cursor: pointer; font-size: 13px; }
   button.ghost.sm { padding: 3px 10px; font-size: 12px; }
-  button.ghost.danger { color: var(--err-fg); border-color: var(--err-fg); }
-  button.ghost:disabled { opacity: 0.5; cursor: default; }
+  button.ghost.danger    { color: var(--err-fg); border-color: var(--err-fg); }
+  button.ghost.subscribe { color: #16a34a; border-color: #16a34a; }
+  button.ghost:disabled  { opacity: 0.5; cursor: default; }
   .cdc-toolbar { display: flex; justify-content: flex-end; }
   .action-cell { display: flex; gap: 6px; }
   button.link    { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
+  .ack-badge {
+    background: rgba(22,163,74,0.1);
+    color: #16a34a;
+    border: 1px solid rgba(22,163,74,0.3);
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+  }
 
   /* Status bar */
   .status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
