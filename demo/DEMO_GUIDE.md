@@ -42,10 +42,24 @@ docker compose -f docker/docker-compose.minio.yml up -d
 cargo build --release -p unidb-server-full        # release (fast runtime — use this)
 # cargo build -p unidb-server-full                # debug (fast compile; only for iterating on server source itself)
 
+# UNIDB_BUFFER_POOL_PAGES: raise this for seeds past ~30k rows/table, or the
+# default (4096 pages = 32MB) exhausts mid-load and forces a synchronous WAL
+# fsync on every write once it's full — throughput collapses to ~1-2k rows/s
+# even on a correct, current build. This is NOT a Postgres shared_buffers-style
+# RAM budget: unidb is mmap-backed, so page bytes already live in the OS page
+# cache "for free" — the pool is just pin/dirty tracking metadata, ~24 bytes
+# per frame. 1,000,000 frames (covers the 1M/5M presets with headroom) costs
+# ~24MB of bookkeeping, not the ~8GB a naive frames×page_size calc implies.
+# Measured: 1.5M-row seed with this setting -> 0 buffer-pool evictions, 250MB
+# total process RSS, customers flat at ~23-25k rows/s (vs ~1-2k/s at default).
+# Tradeoff: a bigger pool allows more dirty pages to accumulate before a
+# checkpoint, so a crash mid-load means a longer ARIES redo replay on next
+# open — not a RAM cost, a recovery-time one.
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
   UNIDB_REQUEST_TIMEOUT_SECS=300 \
+  UNIDB_BUFFER_POOL_PAGES=1000000 \
   STORAGE_BACKEND=minio \
   STORAGE_S3_ENDPOINT=http://localhost:9000 \
   STORAGE_ACCESS_KEY=minioadmin \
