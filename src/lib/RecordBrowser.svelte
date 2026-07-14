@@ -127,7 +127,13 @@
         continue;
       }
       conds.push(`${col} ${op.sql} $${n}`);
-      params.push(f.value);
+      const colType = columnMeta.get(f.column)?.type;
+      try {
+        const bind = bindForColumn(colType, f.value);
+        params.push('literal' in bind ? f.value : bind.param);
+      } catch {
+        params.push(f.value);
+      }
       n += 1;
     }
     return { conds, params };
