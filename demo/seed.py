@@ -15,7 +15,7 @@ Prerequisites: run demo/setup_schema.py first.
 """
 
 import argparse, json, random, sys, time, urllib.request, urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -60,8 +60,8 @@ PROD_NAMES = ["Wireless Headphones","Smart Watch","Running Shoes","Coffee Maker"
               "Sunglasses","Notebook","Pen Set","Resistance Bands","Air Purifier",
               "Scented Candle","Wall Clock","Throw Blanket"]
 
-BASE_TS = int(datetime(2024, 1, 1).timestamp() * 1000)
-DAY_MS  = 86_400_000
+BASE_DT = datetime(2024, 1, 1)
+_SEC    = timedelta(seconds=1)
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -96,7 +96,8 @@ def bulk_insert(table, rows_dicts, chunk=BULK_CHUNK):
 
 
 def rand_ts(rng, lo=0, hi=730):
-    return BASE_TS - rng.randint(lo * DAY_MS, hi * DAY_MS)
+    delta_secs = rng.randint(lo * 86400, hi * 86400)
+    return (BASE_DT - timedelta(seconds=delta_secs)).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def progress(label, done, total, t0):
@@ -213,13 +214,15 @@ def main():
     for i in range(N_ORD):
         inv_id += 1
         oid    = i + 1
-        issued = BASE_TS - rng2.randint(0, 365 * DAY_MS)
-        due    = issued + 30 * DAY_MS
-        paid   = issued + rng2.randint(1, 25) * DAY_MS if rng2.random() < 0.75 else None
-        istatus = "paid" if paid else ("overdue" if rng2.random() < 0.3 else "issued")
+        issued_dt = BASE_DT - timedelta(seconds=rng2.randint(0, 365 * 86400))
+        due_dt    = issued_dt + timedelta(days=30)
+        paid_dt   = issued_dt + timedelta(days=rng2.randint(1, 25)) if rng2.random() < 0.75 else None
+        istatus   = "paid" if paid_dt else ("overdue" if rng2.random() < 0.3 else "issued")
         inv_rows.append({"id": inv_id, "order_id": oid,
             "invoice_number": f"INV-{inv_id:08d}",
-            "issued_at": issued, "due_at": due, "paid_at": paid,
+            "issued_at": issued_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "due_at":    due_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "paid_at":   paid_dt.strftime('%Y-%m-%d %H:%M:%S') if paid_dt else None,
             "total_amount": round(rng2.uniform(10, 5000), 2), "status": istatus})
         for _ in range(rng2.randint(1, 3)):
             ii_id += 1

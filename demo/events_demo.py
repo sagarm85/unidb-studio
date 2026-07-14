@@ -22,6 +22,7 @@ Prerequisite: server running and schema seeded
 """
 
 import json, sys, time, threading, urllib.request, urllib.error
+from datetime import datetime
 try:
     import sseclient  # pip install sseclient-py  (optional — graceful fallback)
     HAS_SSE = True
@@ -73,15 +74,53 @@ def enable_events(table):
             print(f"  ERR enabling events: {msg}", file=sys.stderr)
 
 
+CONSUMER = "demo-py"
+
 # ── SSE listener (background thread) ─────────────────────────────────────────
 events_seen = []
-_stop = threading.Event()
+_stop       = threading.Event()
+_from_seq   = 0   # set by main() before starting the thread
 
-CONSUMER = "demo-py"   # named consumer — engine persists offset in __consumers__
+
+def _commit_offset(seq):
+    """Persist consumer offset to __consumers__ so Studio shows it live."""
+    q = (f"INSERT INTO __consumers__ (consumer_name, offset) VALUES ('{CONSUMER}', {seq}) "
+         f"ON CONFLICT (consumer_name) DO UPDATE SET offset = {seq}")
+    sql(q)
+
+
+def get_current_seq():
+    """Peek at the SSE stream briefly to find the highest committed seq."""
+    url = f"{BASE}/events/subscribe?table=orders"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept": "text/event-stream",
+        "Cache-Control": "no-cache",
+    })
+    last_seq = 0
+    try:
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            buf = []
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
+                if line.startswith("data:"):
+                    buf.append(line[5:].strip())
+                elif line == "" and buf:
+                    try:
+                        evt = json.loads(" ".join(buf))
+                        if evt.get("seq"):
+                            last_seq = evt["seq"]
+                    except json.JSONDecodeError:
+                        pass
+                    buf = []
+    except Exception:
+        pass  # timeout is expected
+    return last_seq
+
 
 def _sse_listener():
-    """Reads the raw SSE stream line-by-line (no external library needed)."""
-    url = f"{BASE}/events/subscribe?table=orders&consumer={CONSUMER}"
+    """Reads only events after _from_seq and updates __consumers__ live."""
+    url = f"{BASE}/events/subscribe?table=orders&from_seq={_from_seq}"
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {TOKEN}",
         "Accept": "text/event-stream",
@@ -114,6 +153,9 @@ def _sse_listener():
                                   f"{old.get('status')} → {new.get('status')}")
                         elif op == "DELETE":
                             print(f"\n  ► EVENT [{seq}] DELETE on {tbl}  id={old.get('id')}")
+                        # Update committed offset after every event
+                        if isinstance(seq, int):
+                            _commit_offset(seq)
                     except json.JSONDecodeError:
                         pass
     except Exception as e:
@@ -130,13 +172,20 @@ def main():
     # Step 1: enable CDC
     enable_events("orders")
 
-    # Step 2: start SSE listener in background
-    print("\n  Starting SSE stream (listening for orders events)…")
+    # Step 2: snapshot current seq so we only see new events (no replay)
+    print("\n  Snapshotting current event position…")
+    global _from_seq
+    _from_seq = get_current_seq()
+    print(f"  Starting from seq {_from_seq}")
+    _commit_offset(_from_seq)   # register consumer in __consumers__ now
+
+    # Step 3: start SSE listener in background
+    print("  Starting SSE stream (listening for orders events)…")
     t = threading.Thread(target=_sse_listener, daemon=True)
     t.start()
     time.sleep(0.5)   # let the connection establish
 
-    # Step 3: find the highest existing order id
+    # Step 4: find the highest existing order id
     res  = sql("SELECT MAX(id) FROM orders", "max order id")
     rows = (res.get("results") or [{}])[0].get("rows", [[0]])
     base_id = (rows[0][0] or 0) + 1
@@ -144,15 +193,16 @@ def main():
     print(f"\n  Will INSERT orders {base_id}, {base_id+1}, {base_id+2}  — watch Events tab!\n")
     time.sleep(0.3)
 
-    # Step 4: INSERT 3 orders — each fires an event
+    # Step 5: INSERT 3 orders — each fires an event
+    now_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     for i in range(3):
         oid = base_id + i
         sql(f"""INSERT INTO orders (id, customer_id, status, total_amount, created_at)
-                VALUES ({oid}, 1, 'pending', {(i+1)*49.99:.2f}, {int(time.time()*1000)})""",
+                VALUES ({oid}, 1, 'pending', {(i+1)*49.99:.2f}, '{now_ts}')""",
             f"INSERT order {oid}")
         time.sleep(0.4)
 
-    # Step 5: UPDATE status — fires UPDATE events
+    # Step 6: UPDATE status — fires UPDATE events
     print()
     for i in range(3):
         oid = base_id + i
@@ -160,7 +210,7 @@ def main():
             f"UPDATE order {oid} → confirmed")
         time.sleep(0.4)
 
-    # Step 6: DELETE one
+    # Step 7: DELETE one
     print()
     sql(f"DELETE FROM orders WHERE id = {base_id+2}", f"DELETE order {base_id+2}")
     time.sleep(0.5)
@@ -170,13 +220,10 @@ def main():
     print(f"\n  ✓  {len(events_seen)} events received on the SSE stream.")
 
     # Show committed consumer offset (same value Studio displays)
-    res = sql(f"SELECT offset FROM __consumers__ WHERE consumer_name = '{CONSUMER}'",
-              "consumer offset")
+    res  = sql(f"SELECT offset FROM __consumers__ WHERE consumer_name = '{CONSUMER}'")
     rows = (res.get("results") or [{}])[0].get("rows", [])
     if rows:
         print(f"  Consumer '{CONSUMER}' committed offset: seq {rows[0][0]}")
-    else:
-        print(f"  Consumer '{CONSUMER}' not yet in __consumers__ (engine may not track ephemeral offset)")
 
     print("  Open Studio → Events tab — the consumer offset bar updates live.\n")
 
