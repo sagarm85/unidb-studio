@@ -28,17 +28,24 @@ cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 ### Option A — local binary (fastest, no Docker)
 
 ```bash
-# Build (one-time after source changes)
-cargo build --release -p unidb-server-full
+# ── Quick start (debug build — fast compile, slower runtime) ──────────────
+cargo build -p unidb-server-full
+nohup env \
+  UNIDB_DATA_DIR=/tmp/unidb-demo-data \
+  UNIDB_JWT_SECRET=dev-secret \
+  UNIDB_REQUEST_TIMEOUT_SECS=300 \
+  ./target/debug/unidb-server-full > /tmp/unidb.log 2>&1 &
 
-# Start engine in background (logs → /tmp/unidb.log)
+# ── Demo start (release build — ~10-50× faster, required for seed perf) ──
+cargo build --release -p unidb-server-full
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
   UNIDB_REQUEST_TIMEOUT_SECS=300 \
   ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 &
+
+# Both variants: logs → /tmp/unidb.log · stop: pkill -f unidb-server-full
 # To tail logs: tail -f /tmp/unidb.log
-# To stop:      pkill -f unidb-server-full
 
 # Start Studio in background (logs → /tmp/studio.log)
 cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 &
@@ -58,8 +65,9 @@ docker compose -f docker/docker-compose.minio.yml up -d
 # MinIO S3 API: http://localhost:9000
 # MinIO console: http://localhost:9001  (minioadmin / minioadmin)
 
-# Step 2 — build (one-time) then start engine with storage vars in background
-cargo build --release -p unidb-server-full
+# Step 2 — build then start engine with storage vars in background
+# (use debug/ for quick iteration, release/ for seed performance)
+cargo build --release -p unidb-server-full   # or: cargo build -p unidb-server-full
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
@@ -71,6 +79,7 @@ nohup env \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
   ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 &
+  # swap release/ → debug/ if using debug build
 # To tail logs: tail -f /tmp/unidb.log
 # To stop:      pkill -f unidb-server-full
 
