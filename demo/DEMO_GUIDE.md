@@ -27,13 +27,14 @@ cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 
 ```bash
 # Terminal 1 — unidb engine
+cargo build -p unidb-server-full && \
 UNIDB_DATA_DIR=/tmp/unidb-demo-data \
 UNIDB_JWT_SECRET=dev-secret \
 UNIDB_REQUEST_TIMEOUT_SECS=300 \
-  ./unidb/target/debug/unidb-server-full
+  ./target/debug/unidb-server-full
 
-# Terminal 2 — Studio dev server
-cd unidb-studio && npm run dev
+# Terminal 2 — Studio dev server (runs in background)
+cd unidb-studio && npm run dev &
 # Open http://localhost:5173
 ```
 
