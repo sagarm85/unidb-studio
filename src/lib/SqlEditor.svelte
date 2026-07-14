@@ -462,13 +462,22 @@
         spellcheck="false"
       />
       {#if embedVec}
+        {@const nonZero = embedVec.filter(v => v > 0).length}
         <div class="embed-out">
-          <code class="embed-preview">[{embedVec.slice(0, 8).map(v => v.toFixed(2)).join(', ')}, … ({embedVec.filter(v => v > 0).length} non-zero / 64 dims)]</code>
+          <span class="embed-dims" class:embed-dims-warn={nonZero <= 2} title="More non-zero dimensions = better discrimination between results">
+            {nonZero} dim{nonZero === 1 ? '' : 's'} active
+            {#if nonZero <= 2}⚠ add more words for better results{/if}
+          </span>
+          <code class="embed-preview">[{embedVec.slice(0, 6).map(v => v.toFixed(2)).join(', ')}, …]</code>
           <button class="embed-btn" onclick={copyVector}>{embedCopied ? '✓ Copied' : 'Copy'}</button>
           <button class="embed-btn primary" onclick={insertVector} title="Insert vector at cursor position in the editor">Insert</button>
         </div>
+        <div class="embed-tip">
+          Tip: use <code>SELECT id, title, vec_distance FROM documents WHERE NEAR(…)</code> to see relevance scores (lower = closer match).
+          {#if nonZero <= 2}Use more descriptive words to activate more dimensions and improve accuracy.{/if}
+        </div>
       {:else}
-        <span class="embed-hint">word-hash → 64-dim vector · matches demo/vector_demo.py</span>
+        <span class="embed-hint">word-hash → 64-dim vector · more words = better results · matches demo/vector_demo.py</span>
       {/if}
     </div>
   {/if}
@@ -847,6 +856,26 @@
   .embed-hint {
     font-size: 11px;
     color: var(--muted);
+  }
+  .embed-dims {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .embed-dims-warn {
+    color: #b45309;
+  }
+  .embed-tip {
+    width: 100%;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .embed-tip code {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text);
   }
   .embed-btn {
     background: none;

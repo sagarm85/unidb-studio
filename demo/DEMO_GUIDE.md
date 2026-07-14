@@ -265,7 +265,8 @@ In real applications this vector comes from your backend, not typed by hand.
 ```sql
 -- Developer reference: raw NEAR syntax (vector pre-computed by application code)
 -- embed("wireless headphones noise cancellation") → this 64-dim vector:
-SELECT id, title
+-- vec_distance shows how close each result is (lower = closer match)
+SELECT id, title, vec_distance
 FROM documents
 WHERE NEAR(embedding, [0.0, 0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0,
                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
