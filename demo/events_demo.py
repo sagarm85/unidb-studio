@@ -83,10 +83,13 @@ _from_seq   = 0   # set by main() before starting the thread
 
 
 def _commit_offset(seq):
-    """Persist consumer offset to __consumers__ so Studio shows it live.
-    __consumers__ has no UNIQUE constraint so we DELETE then INSERT."""
-    sql(f"DELETE FROM __consumers__ WHERE consumer_name = '{CONSUMER}'")
-    sql(f"INSERT INTO __consumers__ (consumer_name, offset) VALUES ('{CONSUMER}', {seq})")
+    """Persist consumer offset to event_consumers (a regular user table).
+    __consumers__ is an engine system table — we don't write to it."""
+    from datetime import datetime
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    sql(f"DELETE FROM event_consumers WHERE consumer_name = '{CONSUMER}'")
+    sql(f"INSERT INTO event_consumers (consumer_name, committed_seq, updated_at) "
+        f"VALUES ('{CONSUMER}', {seq}, '{now}')")
 
 
 def get_current_seq():
@@ -220,7 +223,7 @@ def main():
     print(f"\n  ✓  {len(events_seen)} events received on the SSE stream.")
 
     # Show committed consumer offset (same value Studio displays)
-    res  = sql(f"SELECT offset FROM __consumers__ WHERE consumer_name = '{CONSUMER}'")
+    res  = sql(f"SELECT committed_seq FROM event_consumers WHERE consumer_name = '{CONSUMER}'")
     rows = (res.get("results") or [{}])[0].get("rows", [])
     if rows:
         print(f"  Consumer '{CONSUMER}' committed offset: seq {rows[0][0]}")

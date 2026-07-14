@@ -18,13 +18,13 @@
 
   async function pollConsumers() {
     try {
-      const res = await runSql('SELECT * FROM __consumers__ ORDER BY consumer_name');
-      const map = new Map();
-      for (const [name, offset] of (res.results?.[0]?.rows ?? [])) {
-        if (!map.has(name) || offset > map.get(name)) map.set(name, offset);
-      }
-      consumers = [...map.entries()].map(([name, offset]) => ({ name, offset }));
-    } catch { /* ignore */ }
+      // event_consumers is a regular user table managed by the demo scripts.
+      // __consumers__ is an engine system table (not written by us).
+      const res = await runSql('SELECT * FROM event_consumers ORDER BY consumer_name');
+      consumers = (res.results?.[0]?.rows ?? []).map(([name, seq, updatedAt]) => ({
+        name, seq, updatedAt,
+      }));
+    } catch { /* table may not exist yet */ }
   }
 
   $effect(() => {
@@ -188,37 +188,40 @@
   {:else}
 
     <p class="section-desc">
-      Named consumers track their committed read position in <code>__consumers__</code>.
-      The offset is the seq of the last event they acknowledged.
-      Use <em>From seq</em> on the Live stream tab to replay from any offset.
+      Consumer offsets are tracked in <code>event_consumers</code> — a regular user table
+      managed by the demo script. <code>__consumers__</code> is an engine system table
+      reserved for future engine-level consumer tracking (not written by Studio or demo scripts).
     </p>
 
     {#if consumers.length === 0}
       <p class="muted">
         No consumers registered yet. Run <code>python3 demo/events_demo.py</code> to register <code>demo-py</code>.
+        Make sure you have run <code>setup_schema.py</code> first to create the <code>event_consumers</code> table.
       </p>
     {:else}
       <table class="info-table">
         <thead>
           <tr>
             <th>Consumer</th>
-            <th class="num">Committed offset (seq)</th>
-            <th>Replay from here</th>
+            <th class="num">Committed seq</th>
+            <th>Last updated</th>
+            <th>Replay</th>
           </tr>
         </thead>
         <tbody>
           {#each consumers as c}
             <tr>
               <td class="mono accent">{c.name}</td>
-              <td class="num mono">{c.offset}</td>
+              <td class="num mono">{c.seq}</td>
+              <td class="muted-cell" style="font-size:12px">{c.updatedAt ?? '—'}</td>
               <td>
                 <button class="ghost sm" onclick={() => {
                   subTab = 'stream';
-                  fromSeq = String(c.offset);
+                  fromSeq = String(c.seq);
                   table = '';
-                  startStream({ table: '', fromSeq: String(c.offset) });
+                  startStream({ table: '', fromSeq: String(c.seq) });
                 }}>
-                  ▶ Resume from seq {c.offset}
+                  ▶ Resume from seq {c.seq}
                 </button>
               </td>
             </tr>
@@ -228,10 +231,10 @@
     {/if}
 
     <div class="tip-box">
-      <strong>How it works:</strong> <code>demo/events_demo.py</code> calls
-      <code>DELETE FROM __consumers__ WHERE consumer_name = 'demo-py'</code>
-      then <code>INSERT INTO __consumers__ (consumer_name, offset) VALUES (...)</code>
-      after each event. The engine has no built-in consumer ACK API yet — this is manual offset management.
+      <strong>How it works:</strong> <code>demo/events_demo.py</code> writes to
+      <code>event_consumers</code> via plain SQL after each acknowledged event.
+      <code>__consumers__</code> is owned by the engine — it will be auto-populated
+      once the engine implements native consumer ACK via the SSE API.
     </div>
 
   {/if}

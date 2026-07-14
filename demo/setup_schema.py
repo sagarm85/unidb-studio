@@ -36,7 +36,7 @@ def run(label, q):
 
 # ── Drop in reverse-dependency order ────────────────────────────────────────
 print("\n── Drop existing tables ─────────────────────────────────────────────────")
-for t in ["invoice_items", "invoices", "order_items", "orders", "products", "customers", "_fk_test"]:
+for t in ["invoice_items", "invoices", "order_items", "orders", "products", "customers", "event_consumers", "_fk_test"]:
     run(f"DROP TABLE {t}", f"DROP TABLE {t}")
 
 # ── Recreate with explicit FOREIGN KEY constraints ───────────────────────────
@@ -101,6 +101,11 @@ run("invoice_items", """CREATE TABLE invoice_items (
   FOREIGN KEY (product_id) REFERENCES products(id))""")
 
 # ── Verify information_schema sees the FK relationships ──────────────────────
+run("event_consumers", """CREATE TABLE event_consumers (
+  consumer_name TEXT    NOT NULL,
+  committed_seq INTEGER NOT NULL,
+  updated_at    TIMESTAMP NOT NULL)""")
+
 print("\n── Verify: information_schema.tables ─────────────────────────────────────")
 r = sql("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name")
 rows = (r.get("results") or [{}])[0].get("rows", [])
