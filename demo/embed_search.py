@@ -143,14 +143,15 @@ def create_bucket(name):
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
-            json.loads(r.read())
+            r.read()  # consume body (may be empty on 201)
             print(f"  Bucket '{name}' created")
     except urllib.error.HTTPError as e:
-        body = json.loads(e.read())
+        raw = e.read()
+        body = json.loads(raw) if raw else {}
         if "already" in body.get("error", "").lower() or e.code == 409:
             print(f"  Bucket '{name}' already exists")
         else:
-            print(f"  ERR creating bucket: {body.get('error')}", file=sys.stderr)
+            print(f"  ERR creating bucket: {body.get('error', e.code)}", file=sys.stderr)
 
 
 def storage_put(bucket, key, content: str) -> bool:
@@ -169,7 +170,7 @@ def storage_put(bucket, key, content: str) -> bool:
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            json.loads(r.read())
+            r.read()  # consume body (may be empty on 200/201)
             return True
     except urllib.error.HTTPError:
         return False
@@ -277,28 +278,34 @@ def main():
         t0    = time.perf_counter()
         res   = sql(
             f"SELECT id, title, source_key, vec_distance FROM doc_embeddings"
-            f" WHERE NEAR(embedding, {q_lit}, {len(docs)}) AND vec_distance < 1.3",
+            f" WHERE NEAR(embedding, {q_lit}, {len(docs)})",
             quiet=True,
         )
         ms   = (time.perf_counter() - t0) * 1000
-        rows = (res.get("results") or [{}])[0].get("rows", [])
+        # vec_distance is only available in SELECT, not WHERE — filter client-side
+        all_rows = (res.get("results") or [{}])[0].get("rows", [])
+        rows = [r for r in all_rows if float(r[3]) < 1.3]
         print(f"\n  Query: \"{q_label}\"  ({ms:.1f} ms)")
         if rows:
             for r in rows:
                 print(f"    → [{r[0]}] {r[1]:<50s}  dist={float(r[3]):.4f}")
                 print(f"       source: {r[2]}")
         else:
-            print("    (no matches within distance 1.3)")
+            print(f"    (no matches within distance 1.3 — best was dist={float(all_rows[0][3]):.4f} if any)")
 
     # ── 6. Retrieve a document from MinIO ─────────────────────────────────────
     print("\n── Step 6: Retrieve original document from MinIO ────────────────────")
     first_key = docs[0][0]
-    content   = storage_get(BUCKET, first_key) if storage_live else None
-    if content:
-        print(f"  Retrieved  {BUCKET}/{first_key}  ({len(content)} chars)")
-        print(f"  Preview: {content[:120].strip()}…")
+    if not storage_live:
+        print("  [SKIP] MinIO not configured — open Studio → Storage tab after docker-compose")
     else:
-        print("  [SKIP] MinIO not running — open Studio → Storage tab after docker-compose")
+        content = storage_get(BUCKET, first_key)
+        if content:
+            print(f"  Retrieved  {BUCKET}/{first_key}  ({len(content)} chars)")
+            print(f"  Preview: {content[:120].strip()}…")
+        else:
+            print(f"  [SKIP] Could not retrieve {first_key} via presigned URL")
+            print(f"         (engine may be running without MinIO — restart with STORAGE_BACKEND=minio)")
 
     print("\n✓ Pipeline complete.")
     print(f"  {len(docs)} document(s) uploaded to MinIO bucket '{BUCKET}'.")
@@ -307,8 +314,8 @@ def main():
     print("  Open Studio → SQL editor → Embed button to run your own searches:\n")
     print("    SELECT id, title, source_key, vec_distance")
     print("    FROM doc_embeddings")
-    print(f"    WHERE NEAR(embedding, [...], {len(docs)})")
-    print("      AND vec_distance < 1.3;\n")
+    print(f"    WHERE NEAR(embedding, [...], {len(docs)});")
+    print("    -- vec_distance is SELECT-only; filter results by distance in the app\n")
 
 
 if __name__ == "__main__":
