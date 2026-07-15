@@ -29,8 +29,10 @@ cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 
 ```bash
 # Step 1 — start MinIO (one-time; the createbucket service makes the `unidb` bucket)
+
 cd /path/to/unidb
 docker compose -f docker/docker-compose.minio.yml up -d
+
 # MinIO S3 API: http://localhost:9000
 # MinIO console: http://localhost:9001  (minioadmin / minioadmin)
 
@@ -39,7 +41,9 @@ docker compose -f docker/docker-compose.minio.yml up -d
 # perf-sensitive, and a debug build is ~10-50× slower on the write path
 # (index-backed constraint checks are unoptimized without --release) —
 # it LOOKS like a regression, it's just the wrong build profile.
+
 cargo build --release -p unidb-server-full        # release (fast runtime — use this)
+
 # cargo build -p unidb-server-full                # debug (fast compile; only for iterating on server source itself)
 
 # UNIDB_BUFFER_POOL_PAGES: raise this for seeds past ~30k rows/table, or the
@@ -55,6 +59,7 @@ cargo build --release -p unidb-server-full        # release (fast runtime — us
 # Tradeoff: a bigger pool allows more dirty pages to accumulate before a
 # checkpoint, so a crash mid-load means a longer ARIES redo replay on next
 # open — not a RAM cost, a recovery-time one.
+
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
@@ -67,13 +72,16 @@ nohup env \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
   ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
+
   # swap release/ → debug/ only if you built the debug line above
 # To tail logs: tail -f /tmp/unidb.log
 # To stop:      pkill -f unidb-server-full
 
 # Step 3 — Studio dev server (logs → /tmp/studio.log)
 # < /dev/null prevents Vite from suspending on tty input when backgrounded
-cd unidb-studio && nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
+
+nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
+
 # Open http://localhost:5173
 # To tail logs: tail -f /tmp/studio.log
 ```
