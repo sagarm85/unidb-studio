@@ -70,7 +70,11 @@
     return () => clearInterval(id);
   });
 
-  function switchTab(t) { subTab = t; }
+  let obsEl = $state(null);
+  function switchTab(t) {
+    subTab = t;
+    obsEl?.closest('.panel')?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   const kinds   = ['select', 'insert', 'update', 'delete'];
   const latency = $derived(stats?.statement_latency ?? {});
@@ -121,7 +125,7 @@
   }
 </script>
 
-<div class="obs">
+<div class="obs" bind:this={obsEl}>
   <!-- Subtab nav — deliberately separate from the live/refresh controls -->
   <div class="obs-header">
     <div class="subtabs">
@@ -423,6 +427,10 @@
     gap: 10px;
     padding-bottom: 2px;
     border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg);
   }
   .subtabs {
     display: flex;
@@ -443,6 +451,8 @@
     color: var(--accent);
     border-bottom-color: var(--accent);
     font-weight: 600;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-radius: 6px 6px 0 0;
   }
   .subtabs button:hover:not(.active) { color: var(--text); }
   .hspacer { flex: 1; }

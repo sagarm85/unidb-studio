@@ -1,0 +1,11 @@
+ACID Transactions Explained
+
+ACID is a set of four properties that guarantee database transactions are processed reliably, even under concurrent access or system failures.
+
+Atomicity ensures that all statements within a transaction are treated as a single unit. If any statement fails, the entire transaction is rolled back and the database returns to its state before the transaction began. No partial updates are visible to other users. For example, transferring money between two bank accounts — debiting one and crediting the other — must succeed or fail together.
+
+Consistency means a transaction can only bring the database from one valid state to another. Constraints such as foreign keys, unique indexes, and check conditions are enforced at commit time. A transaction that would violate a constraint is rejected, preserving the integrity of the data.
+
+Isolation controls how concurrent transactions interact. At the read committed level, a transaction sees only data that other transactions have already committed. At serializable level, transactions are executed as if they were run one after another, eliminating phenomena such as phantom reads. Higher isolation levels provide stronger guarantees but can reduce throughput due to increased locking.
+
+Durability guarantees that once a transaction commits, its changes survive permanently — even a power failure or operating system crash immediately after the commit. This is achieved by flushing write-ahead log records to durable storage before acknowledging the commit to the client.

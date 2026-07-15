@@ -1,0 +1,9 @@
+Introduction to Relational Databases
+
+Relational databases organize data into structured tables, where each table represents a real-world entity such as customers, orders, or products. Rows hold individual records and columns define the attributes of each record. Relationships between tables are expressed using foreign keys — a column in one table that references the primary key of another.
+
+SQL (Structured Query Language) is the standard interface for querying and manipulating relational data. SELECT retrieves rows, INSERT adds new records, UPDATE modifies existing ones, and DELETE removes them. JOIN operations combine rows from two or more tables based on a matching condition, enabling complex queries across related entities.
+
+Indexes speed up data retrieval by maintaining a sorted structure alongside the main table. A B-tree index on a customer ID column, for example, allows the database to locate a specific customer in O(log n) time instead of scanning every row. Primary key indexes are created automatically; additional indexes should be added on columns that appear frequently in WHERE clauses or JOIN conditions.
+
+ACID properties — Atomicity, Consistency, Isolation, and Durability — guarantee reliable transaction processing. A transaction either commits all of its changes or rolls back all of them, leaving the database in a consistent state even in the event of hardware failures or concurrent access by multiple users.

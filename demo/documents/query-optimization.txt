@@ -1,0 +1,11 @@
+SQL Query Optimization
+
+Query optimization is the process by which a database engine converts a SQL statement into an efficient execution plan. The query planner generates multiple candidate plans, estimates the cost of each based on table statistics, and selects the cheapest one to execute.
+
+Row count estimates are the foundation of cost-based optimization. The planner uses column statistics — histograms of value distributions, null ratios, and distinct value counts — to predict how many rows each operator will produce. Poor estimates lead to suboptimal plan choices, such as choosing a nested-loop join when a hash join would be faster.
+
+Indexes eliminate full table scans for selective queries. An index on customer_id allows the planner to look up matching rows directly instead of reading the whole table. Covering indexes go further: if all columns needed by a query are in the index itself, the planner can satisfy the query from the index alone without touching the main table (a heap), reducing I/O significantly.
+
+Join ordering has an exponential impact on query performance. For a query joining five tables, there are hundreds of possible orderings. The planner uses dynamic programming to find the optimal order, guided by estimated cardinalities. Pushing filters down to the earliest possible point in the plan — before joins rather than after — reduces the volume of data that flows through expensive operators.
+
+EXPLAIN ANALYZE is the primary tool for diagnosing slow queries. It shows the actual execution plan, including per-node row counts, timing, and loop counts. Comparing estimated vs actual row counts reveals where the planner's assumptions broke down and where adding or refreshing statistics would help.
