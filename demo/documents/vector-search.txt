@@ -1,0 +1,9 @@
+How Vector Search Works
+
+Vector search is a technique for finding semantically similar content by converting data into dense numeric arrays called embeddings. A machine learning model — such as a sentence transformer or a large language model — maps each piece of text to a point in high-dimensional space, typically 384 to 1536 dimensions. Content with similar meaning lands near each other in this space, regardless of exact word overlap.
+
+To search, the query text is converted into an embedding using the same model used to embed the stored documents. The database then finds the stored vectors closest to the query vector by computing distances. Euclidean distance and cosine similarity are the most common metrics; lower Euclidean distance means higher similarity.
+
+HNSW (Hierarchical Navigable Small World) is the leading index structure for approximate nearest-neighbour search. It builds a layered graph where each node connects to its nearest neighbours. A search starts at the top layer, greedily navigates toward the query point, then refines the result at the bottom layer. This delivers sub-millisecond query times even across tens of millions of vectors, with recall rates above 95%.
+
+Applications of vector search include semantic document retrieval, product recommendations, image similarity, fraud detection, and duplicate content identification. Unlike keyword search, vector search understands meaning — a query for "automobile" can match documents about "cars" or "vehicles" even without the exact word.

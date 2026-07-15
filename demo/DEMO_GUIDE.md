@@ -272,17 +272,28 @@ click **Insert** → the 64-dim vector is placed at the cursor automatically.
 
 ```sql
 -- Use Studio → SQL editor → Embed button to generate [...] from plain text
--- vec_distance: lower = closer match; use it to judge result quality
+-- Fetch more candidates than needed, then cut off noise by distance
 SELECT id, title, vec_distance
 FROM documents
-WHERE NEAR(embedding, [...], 3);
+WHERE NEAR(embedding, [...], 10)   -- ask for 10 candidates
+  AND vec_distance < 1.3;          -- keep only genuine matches
 ```
 
 `vec_distance` is the Euclidean distance between the stored vector and your
-query vector. Results are returned ascending (closest first). A distance below
-~1.1 indicates a genuinely similar document; above ~1.5 is likely a
-hash-collision match (word-hash embedding limitation — use sentence-transformers
-for true semantic similarity).
+query vector (lower = closer). NEAR() always returns k rows regardless of
+quality — the distance filter removes hash-collision noise:
+
+| vec_distance | Meaning |
+|---|---|
+| < 0.8 | Strong match — many shared words |
+| 0.8 – 1.3 | Plausible match — some overlap (single-word queries land here) |
+| > 1.3 | Likely noise (word-hash collision) |
+
+> **Why does "Laptop" return unrelated results?**  
+> Single-word queries activate only 1 of 64 dimensions. Other words in
+> unrelated documents can hash to the same bucket by coincidence, producing
+> false positives. The distance filter removes them. Use multi-word queries
+> ("USB laptop stand ergonomic") for best results with word-hash embeddings.
 
 ### Upgrade to real semantic embeddings
 

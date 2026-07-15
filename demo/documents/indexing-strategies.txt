@@ -1,0 +1,9 @@
+B-Tree vs HNSW Indexing
+
+Indexes are auxiliary data structures that allow a database to locate rows quickly without scanning the entire table. Choosing the right index type for each column and query pattern is one of the most impactful performance decisions in database design.
+
+B-tree indexes are the standard choice for scalar columns — integers, strings, dates, and UUIDs. They organize values in a balanced tree where every leaf node is at the same depth, guaranteeing O(log n) lookup for equality queries and efficient range scans (WHERE created_at BETWEEN ...). B-trees are updated synchronously on every INSERT, UPDATE, and DELETE, so write overhead scales with the number of indexed columns.
+
+HNSW (Hierarchical Navigable Small World) indexes are designed for vector columns. Instead of sorting values, they build a proximity graph where each vector node connects to its nearest neighbours at multiple levels of granularity. Searches navigate the graph greedily, starting coarse and refining toward the exact query region. HNSW delivers approximate nearest-neighbour results in microseconds regardless of dataset size, with configurable recall vs speed trade-offs controlled by the ef_construction and ef_search parameters.
+
+The two index types are complementary. A product catalogue might use a B-tree on the product ID for fast primary key lookups and an HNSW index on the embedding column for semantic similarity search. Combining both in a single query — filter by category using the B-tree, rank by embedding similarity using HNSW — enables hybrid search that is both fast and semantically aware.

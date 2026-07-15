@@ -1,0 +1,9 @@
+Write-Ahead Logging and Crash Recovery
+
+Write-ahead logging (WAL) is the mechanism databases use to guarantee durability without requiring every write to synchronously flush data pages to disk. The core rule is simple: before any change is applied to the database's data pages, a log record describing that change must be written and flushed to the WAL file on durable storage.
+
+When a transaction commits, the database writes a commit log record and calls fsync on the WAL file. Only after that fsync returns does the commit acknowledgement go back to the client. The data pages themselves may still be held in memory (the buffer pool) and written lazily to disk later. Because the WAL is already durable, the changes can always be replayed if the process crashes before the pages are flushed.
+
+Crash recovery uses the ARIES algorithm. On startup, the engine reads the WAL from the last checkpoint forward and performs three passes. The analysis pass identifies which transactions were active at the time of the crash. The redo pass replays all log records in order, restoring the database to the exact state it was in at the moment of the crash. The undo pass rolls back any transactions that had not yet committed, leaving the database in a consistent state.
+
+Checkpoint frequency is a key tuning parameter. More frequent checkpoints reduce recovery time (less WAL to replay) but increase write amplification during normal operation. Operators choose a checkpoint interval that balances recovery time objectives against runtime throughput requirements.
