@@ -43,7 +43,7 @@ docker compose -f docker/docker-compose.minio.yml up -d
 curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready"
 docker run -d --name pg-demo \
   -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo \
-  -p 5432:5432 postgres:16-alpine
+  -p 5433:5432 postgres:16-alpine
 until docker exec pg-demo pg_isready -U demo 2>/dev/null; do sleep 1; done && echo "Postgres ready"
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \

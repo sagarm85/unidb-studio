@@ -4,7 +4,7 @@ demo/compare.py — side-by-side benchmark: unidb vs Postgres.
 
 Usage:
   python3 demo/compare.py --size 10k
-  python3 demo/compare.py --size 50k  --pg-dsn "host=localhost port=5432 dbname=demo user=demo password=demo"
+  python3 demo/compare.py --size 50k  --pg-dsn "host=127.0.0.1 port=5433 dbname=demo user=demo password=demo"
   python3 demo/compare.py --size 1M   --unidb-url http://localhost:8080
 
 Steps performed:
@@ -276,7 +276,7 @@ def main():
     ap.add_argument("--unidb-url", default="http://localhost:8080",
                     help="unidb HTTP base URL")
     ap.add_argument("--pg-dsn",
-                    default="host=localhost port=5432 dbname=demo user=demo password=demo",
+                    default="host=127.0.0.1 port=5433 dbname=demo user=demo password=demo",
                     help="Postgres DSN")
     ap.add_argument("--skip-setup",  action="store_true",
                     help="Skip schema creation + seeding (schema already ready)")
