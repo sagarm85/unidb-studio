@@ -90,6 +90,40 @@ nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
 > `docker compose -f docker/docker-compose.minio.yml down`
 > (add `-v` to wipe stored objects too)
 
+### Option B — full Docker stack (unidb + Postgres + MinIO)
+
+Use this when you want to run **section 3 (Postgres comparison)**. It starts
+unidb, Postgres 16, and MinIO together in Docker — no local Rust build needed.
+
+**Prerequisite:** both repos must be siblings on disk:
+```
+AI_World/
+  unidb/          ← engine repo (docker-compose builds from here)
+  unidb-studio/   ← this repo
+```
+
+```bash
+# From unidb-studio root — builds the unidb image from ../unidb and starts all three services
+docker compose -f demo/docker-compose.demo.yml up -d --build
+
+# First build takes 2-5 min (compiles the Rust engine); subsequent starts are instant.
+# Services exposed:
+#   8080  unidb HTTP API
+#   5432  Postgres 16       (user=demo  password=demo  db=demo)
+#   9000  MinIO S3 API
+#   9001  MinIO web console  http://localhost:9001  (minioadmin / minioadmin)
+
+# Wait for unidb to be ready (health check polls /stats):
+until curl -sf http://localhost:8080/stats > /dev/null; do sleep 2; done && echo "unidb ready"
+
+# Studio dev server (same as Option A — not included in docker-compose)
+nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
+# Open http://localhost:5173
+```
+
+> **To stop:** `docker compose -f demo/docker-compose.demo.yml down`  
+> **To wipe all data:** `docker compose -f demo/docker-compose.demo.yml down -v`
+
 ---
 
 ## 2. E-commerce schema + seed
@@ -272,16 +306,20 @@ click **Insert** → the 64-dim vector is placed at the cursor automatically.
 
 ```sql
 -- Use Studio → SQL editor → Embed button to generate [...] from plain text
--- Fetch more candidates than needed, then cut off noise by distance
+-- vec_distance is SELECT-only — put it in SELECT, not WHERE
 SELECT id, title, vec_distance
 FROM documents
-WHERE NEAR(embedding, [...], 10)   -- ask for 10 candidates
-  AND vec_distance < 1.3;          -- keep only genuine matches
+WHERE NEAR(embedding, [...], 10);  -- fetch 10 candidates
+-- then read the vec_distance column: below 1.3 = relevant, above = noise
 ```
+
+> **Do not** put `vec_distance` in a WHERE clause — the engine only exposes it
+> as a virtual SELECT column and will return `COLUMN_NOT_FOUND` if you try to
+> filter on it. Discard noisy rows in your application after fetching results.
 
 `vec_distance` is the Euclidean distance between the stored vector and your
 query vector (lower = closer). NEAR() always returns k rows regardless of
-quality — the distance filter removes hash-collision noise:
+quality — interpret the distance column to separate signal from noise:
 
 | vec_distance | Meaning |
 |---|---|
