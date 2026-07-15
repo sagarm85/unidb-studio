@@ -13,12 +13,13 @@ Allow **15–20 minutes** before the demo. Run every step in order.
 ### Step 1 — Clean slate
 
 ```bash
-# Kill anything on the ports
 pkill -f unidb-server-full; pkill -f vite
-lsof -ti:5173 | xargs kill -9 2>/dev/null || true
-lsof -ti:8080 | xargs kill -9 2>/dev/null || true
-
-# Wipe engine data (tables, WAL, indexes)
+docker rm -f pg-demo 2>/dev/null || true
+docker compose -f demo/docker-compose.demo.yml down 2>/dev/null || true
+docker compose -f docker/docker-compose.minio.yml down 2>/dev/null || true
+for port in 5173 8080 9000 9001 5432; do
+  lsof -ti:$port | xargs kill -9 2>/dev/null || true
+done
 rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
 ```
 
