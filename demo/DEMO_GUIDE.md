@@ -24,30 +24,30 @@ rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
 
 ---
 
-### Step 2 — Start MinIO (Storage + document embedding)
+### Step 2 — Start the stack
 
-```bash
-cd /path/to/unidb
-docker compose -f docker/docker-compose.minio.yml up -d
-```
-
-Verify:
-```bash
-curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready"
-```
-
-MinIO console → http://localhost:9001 (minioadmin / minioadmin)
+Pick **one** path. Both expose unidb on port 8080, MinIO on 9000, and Postgres on 5432.  
+Do **not** run both at the same time.
 
 ---
 
-### Step 3 — Build and start the engine
+#### Path A — Local binary (no Docker build; use when Docker Hub is slow)
+
+Requires the engine already compiled (`cargo build --release` done previously).
 
 ```bash
+# MinIO
 cd /path/to/unidb
+docker compose -f docker/docker-compose.minio.yml up -d
+curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready"
 
-# First build takes 2–5 min; subsequent starts are instant (binary is cached)
-cargo build --release -p unidb-server-full
+# Postgres (needed for Scene 9 — Postgres comparison)
+docker run -d --name pg-demo \
+  -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo \
+  -p 5432:5432 postgres:16-alpine
+until docker exec pg-demo pg_isready -U demo 2>/dev/null; do sleep 1; done && echo "Postgres ready"
 
+# unidb engine
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
@@ -59,13 +59,35 @@ nohup env \
   STORAGE_SECRET_KEY=minioadmin \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
-  ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
+  /path/to/unidb/target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
 
-# Wait until ready
 until curl -sf http://localhost:8080/stats > /dev/null; do sleep 1; done && echo "Engine ready"
 ```
 
-> Logs: `tail -f /tmp/unidb.log` · Stop: `pkill -f unidb-server-full`
+> Logs: `tail -f /tmp/unidb.log` · Stop: `pkill -f unidb-server-full`  
+> Stop Postgres after demo: `docker rm -f pg-demo`
+
+---
+
+#### Path B — Full Docker (unidb + Postgres + MinIO all in one command)
+
+Requires both repos as siblings: `AI_World/unidb/` and `AI_World/unidb-studio/`.  
+First build compiles the Rust engine inside Docker (2–5 min); subsequent starts are instant.
+
+```bash
+# From unidb-studio root
+docker compose -f demo/docker-compose.demo.yml up -d --build
+
+until curl -sf http://localhost:8080/stats > /dev/null; do sleep 2; done && echo "Engine ready"
+```
+
+Services started:
+- **8080** unidb engine
+- **5432** Postgres 16 (user=demo / password=demo / db=demo)
+- **9000** MinIO S3 API
+- **9001** MinIO console → http://localhost:9001 (minioadmin / minioadmin)
+
+> Stop + wipe: `docker compose -f demo/docker-compose.demo.yml down -v`
 
 ---
 
@@ -104,27 +126,15 @@ python3 demo/embed_search.py
 
 ---
 
-### Step 7 — Postgres comparison (optional)
+### Step 7 — Postgres comparison data
 
-Skip if Docker Hub was unreachable — the rest of the demo works without it.
+Postgres is already running from Step 2 (both Path A and Path B start it).  
+Just run the benchmark script to seed both databases and write the Compare tab data:
 
 ```bash
-# Start Postgres (small image, no Rust compile)
-docker run -d --name pg-demo \
-  -e POSTGRES_USER=demo \
-  -e POSTGRES_PASSWORD=demo \
-  -e POSTGRES_DB=demo \
-  -p 5432:5432 \
-  postgres:16-alpine
-
-# Wait until ready
-until docker exec pg-demo pg_isready -U demo 2>/dev/null; do sleep 1; done && echo "Postgres ready"
-
-# Seed both unidb and Postgres, write Studio Compare tab data
 python3 demo/compare.py --size 10k
+# For more dramatic results: --size 50k or --size 200k
 ```
-
-> Stop Postgres after demo: `docker rm -f pg-demo`
 
 ---
 
@@ -140,7 +150,7 @@ Run through this before the audience arrives:
 | 4 | Data seeded | Studio → Records → customers → rows appear |
 | 5 | Vector table ready | SQL editor: `SELECT COUNT(*) FROM doc_embeddings;` → 6 |
 | 6 | Storage populated | Studio → Storage tab → `documents/` bucket with 6 files |
-| 7 | Compare data ready | Studio → Compare tab → bar chart visible *(if Step 7 done)* |
+| 7 | Compare data ready | Studio → Compare tab → bar chart visible |
 
 ---
 
@@ -386,7 +396,7 @@ What to say:
 | `doc_embeddings` not found | Run `python3 demo/embed_search.py` |
 | vec_distance COLUMN_NOT_FOUND | Remove `vec_distance` from WHERE — use it in SELECT only |
 | Compare tab empty | Run `python3 demo/compare.py --size 10k` |
-| Docker Hub TLS timeout | Use standalone Postgres: `docker run -d --name pg-demo -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo -p 5432:5432 postgres:16-alpine` |
+| Docker Hub TLS timeout on Path B | Switch to Path A (local binary) — `postgres:16-alpine` is a tiny image that almost always pulls; the Rust base image is the one that times out |
 | Events tab shows nothing | Select table `orders`, click Enable, then Start — then run the script or SQL |
 
 ---
