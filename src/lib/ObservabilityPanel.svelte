@@ -73,7 +73,7 @@
   let obsEl = $state(null);
   function switchTab(t) {
     subTab = t;
-    obsEl?.closest('.panel')?.scrollTo({ top: 0, behavior: 'smooth' });
+    obsEl?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   const kinds   = ['select', 'insert', 'update', 'delete'];
@@ -418,6 +418,11 @@
     flex-direction: column;
     gap: 16px;
     padding-bottom: 24px;
+    /* Own scroll context so position:sticky on .obs-header works reliably
+       inside the flex .panel parent (sticky is unreliable in flex children) */
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   /* ── header (subtabs + controls) ── */
