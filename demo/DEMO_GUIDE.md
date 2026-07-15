@@ -37,7 +37,6 @@ rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
 #### Path A — Local binary
 
 ```bash
-cd /path/to/unidb
 cargo build --release -p unidb-server-full
 docker compose -f docker/docker-compose.minio.yml up -d
 curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready"
