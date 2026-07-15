@@ -154,6 +154,25 @@ python3 demo/seed.py --size 10M    # ~8M rows,    ~8.5 min
 | **Query Performance** | Engine insert p50/p99 μs (B-tree cost), SELECT latency after the JOIN above |
 | **Observability** | Live WAL bytes, commit count, buffer pool hit ratio |
 
+### 2a. Schema graph (best shown here, before SQL queries)
+
+Open **Studio → Schema tab** immediately after seeding. Key talking points:
+
+- **Six tables, FK arrows drawn automatically** from the live catalog — no separate ERD tool needed.
+  ```
+  customers ──< orders ──< order_items >── products
+                  │
+                  └──< invoices
+                         │
+                         └──< payments
+  ```
+- Click any table node to highlight its FK edges and see column types.
+- The graph is live: add a table in SQL → refresh → it appears immediately.
+
+**Why it matters for the demo:** most teams maintain a separate draw.io/dbdiagram file that drifts from reality. unidb surfaces the actual schema from the engine catalog — it's always in sync.
+
+**Then go straight to SQL editor** and run the JOIN query below. The audience already understands the join path from the graph, so the query reads naturally.
+
 ### Complex query — 50 k rows from 5 M (good for 5M+ seeds)
 
 Run this in Studio → **SQL editor** after seeding at `--size 5M` or larger.
