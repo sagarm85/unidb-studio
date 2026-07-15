@@ -26,28 +26,19 @@ rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
 
 ### Step 2 — Start the stack
 
-Pick **one** path. Both expose unidb on port 8080, MinIO on 9000, and Postgres on 5432.  
-Do **not** run both at the same time.
+> Pick **Path A** or **Path B** — not both.
 
----
-
-#### Path A — Local binary (no Docker build; use when Docker Hub is slow)
-
-Requires the engine already compiled (`cargo build --release` done previously).
+#### Path A — Local binary
 
 ```bash
-# MinIO
 cd /path/to/unidb
+cargo build --release -p unidb-server-full
 docker compose -f docker/docker-compose.minio.yml up -d
 curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready"
-
-# Postgres (needed for Scene 9 — Postgres comparison)
 docker run -d --name pg-demo \
   -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo \
   -p 5432:5432 postgres:16-alpine
 until docker exec pg-demo pg_isready -U demo 2>/dev/null; do sleep 1; done && echo "Postgres ready"
-
-# unidb engine
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
@@ -59,35 +50,17 @@ nohup env \
   STORAGE_SECRET_KEY=minioadmin \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
-  /path/to/unidb/target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
-
+  ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
 until curl -sf http://localhost:8080/stats > /dev/null; do sleep 1; done && echo "Engine ready"
 ```
 
-> Logs: `tail -f /tmp/unidb.log` · Stop: `pkill -f unidb-server-full`  
-> Stop Postgres after demo: `docker rm -f pg-demo`
-
----
-
-#### Path B — Full Docker (unidb + Postgres + MinIO all in one command)
-
-Requires both repos as siblings: `AI_World/unidb/` and `AI_World/unidb-studio/`.  
-First build compiles the Rust engine inside Docker (2–5 min); subsequent starts are instant.
+#### Path B — Full Docker
 
 ```bash
 # From unidb-studio root
 docker compose -f demo/docker-compose.demo.yml up -d --build
-
 until curl -sf http://localhost:8080/stats > /dev/null; do sleep 2; done && echo "Engine ready"
 ```
-
-Services started:
-- **8080** unidb engine
-- **5432** Postgres 16 (user=demo / password=demo / db=demo)
-- **9000** MinIO S3 API
-- **9001** MinIO console → http://localhost:9001 (minioadmin / minioadmin)
-
-> Stop + wipe: `docker compose -f demo/docker-compose.demo.yml down -v`
 
 ---
 
