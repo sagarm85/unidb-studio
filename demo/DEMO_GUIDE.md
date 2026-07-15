@@ -56,7 +56,7 @@ nohup env \
   STORAGE_BUCKET=unidb \
   STORAGE_FORCE_PATH_STYLE=true \
   ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
-until curl -sf http://localhost:8080/stats > /dev/null; do sleep 1; done && echo "Engine ready"
+until curl -sf http://localhost:8080/metrics > /dev/null; do sleep 1; done && echo "Engine ready"
 ```
 
 #### Path B — Full Docker
@@ -122,7 +122,7 @@ Run through this before the audience arrives:
 
 | # | Check | How to verify |
 |---|-------|--------------|
-| 1 | Engine running | `curl -sf http://localhost:8080/stats` → returns JSON |
+| 1 | Engine running | `curl -sf http://localhost:8080/metrics` → returns Prometheus text |
 | 2 | Studio loads | Open http://localhost:5173 — no "Not configured" banner |
 | 3 | Schema visible | Studio → Schema tab → 6 table boxes with FK arrows |
 | 4 | Data seeded | Studio → Records → customers → rows appear |
