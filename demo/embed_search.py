@@ -4,18 +4,16 @@ demo/embed_search.py — document upload to MinIO + embedding-based search.
 
 Shows the full pipeline:
 
-  1. Upload a text document to MinIO via  PUT /storage/{bucket}/objects/{key}
-  2. Read it back                         GET /storage/{bucket}/objects/{key}
+  1. Read all .txt files from  demo/documents/
+  2. Upload each file to MinIO  PUT /storage/{bucket}/objects/{key}
   3. Generate a vector embedding from the content
   4. Store (title, source_key, snippet, embedding) in unidb `doc_embeddings`
   5. Run  WHERE NEAR(embedding, <query_vec>, k)  to do semantic search
   6. Return results with the MinIO object key so the caller can download originals
 
-This is the "Supabase AI search over your own documents" pattern — MinIO is the
-blob store, unidb is the vector index + metadata store.
+Add a new document: just drop a .txt file into demo/documents/ and re-run.
 
 Usage:
-    # Start unidb + MinIO first (docker-compose or local)
     python3 demo/embed_search.py
 
 NOTE ON EMBEDDINGS
@@ -36,78 +34,48 @@ NOTE ON EMBEDDINGS
   The SQL surface is identical — only DIM changes in CREATE TABLE.
 """
 
-import hashlib, json, math, sys, time, urllib.request, urllib.error
+import hashlib, json, math, os, sys, time, urllib.request, urllib.error
 
 BASE    = "http://localhost:8080"
-TOKEN   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjE4MTU1NDYzMzV9.8I1BTxTJgJLVd-uHt80AiS3ufAEr6MhjeA5POFwWbEI"
+TOKEN   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZXYiLCJleHAiOjk5OTk5OTk5OTl9.2g_W4FLYYKKISbZ3lzL0LRK4FE6WWS4bp7w0dKGvuqA"
 HDRS    = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 BUCKET  = "documents"
 DIM     = 64
 
-
-# ── Sample documents (would be real file uploads in production) ───────────────
-SAMPLE_DOCS = [
-    ("tech/database-internals.txt",
-     "Database Internals Overview",
-     """A database engine consists of a storage engine, a query planner, and a
-     transaction manager. The storage engine handles reading and writing pages to
-     disk using a buffer pool. B-tree indexes accelerate point lookups and range
-     scans. The WAL (Write-Ahead Log) ensures durability: every change is logged
-     before it is applied. MVCC allows concurrent readers and writers without
-     locking by maintaining multiple row versions."""),
-
-    ("tech/vector-search-intro.txt",
-     "Vector Search and Embeddings",
-     """Vector search finds semantically similar documents by comparing high-dimensional
-     float vectors called embeddings. A language model maps each document to a dense
-     vector where similar documents cluster together. HNSW (Hierarchical Navigable
-     Small World) is the most popular approximate nearest-neighbour index: it builds
-     a layered graph and traverses it greedily to find the k closest vectors in
-     sub-linear time."""),
-
-    ("tech/event-driven-architecture.txt",
-     "Event-Driven Architecture with CDC",
-     """Change Data Capture (CDC) turns database writes into an event stream.
-     Every INSERT, UPDATE, and DELETE fires an event containing the before and after
-     row state. Consumers subscribe to the stream and react in real time — perfect
-     for invalidating caches, sending notifications, or syncing replicas.
-     CDC eliminates polling: the consumer wakes only when data actually changes."""),
-
-    ("business/e-commerce-analytics.txt",
-     "E-Commerce Analytics and Reporting",
-     """Key metrics for an e-commerce platform: conversion rate (visitors to buyers),
-     average order value, customer lifetime value, and churn rate. Cohort analysis
-     groups customers by acquisition date and tracks retention over time.
-     Revenue by product category and top-10 customers by order count are the two
-     most-requested SQL queries in any analytics dashboard."""),
-
-    ("business/supply-chain-overview.txt",
-     "Supply Chain and Inventory Management",
-     """Inventory management tracks stock quantity, reorder points, and supplier lead
-     times. A stock-out (zero quantity) means lost revenue; overstock ties up
-     working capital. The economic order quantity (EOQ) formula minimises total
-     holding and ordering costs. Real-time inventory updates from the warehouse
-     are fed into the database on every shipment receipt or dispatch."""),
-
-    ("science/climate-data.txt",
-     "Climate Data and Environmental Monitoring",
-     """Air quality sensors measure PM2.5 particulate concentration, CO2 levels,
-     volatile organic compounds (VOCs), temperature, and relative humidity.
-     Time-series data is stored with a timestamp, sensor ID, and measurement value.
-     Anomaly detection flags readings more than 3 standard deviations from the
-     rolling mean. Long-term trend analysis requires at least 12 months of data."""),
-]
+# Directory containing .txt files to upload — relative to this script
+DOCS_DIR = os.path.join(os.path.dirname(__file__), "documents")
 
 SEARCH_QUERIES = [
-    ("How databases store data on disk",
-     "storage engine buffer pool B-tree WAL durability"),
-    ("How semantic search works",
-     "vector embedding similarity HNSW nearest neighbour"),
-    ("Real-time event streaming from the database",
-     "CDC event stream INSERT UPDATE notifications real-time"),
-    ("Inventory and stock management",
-     "inventory stock supply chain order quantity warehouse"),
+    ("Database transactions and ACID guarantees",
+     "database transactions ACID commit rollback atomicity durability"),
+    ("Vector search and embeddings",
+     "vector embedding HNSW nearest neighbour semantic search similarity"),
+    ("Crash recovery and write-ahead logging",
+     "crash recovery WAL write-ahead log durability fsync checkpoint"),
+    ("Query optimization and index strategies",
+     "query plan index optimization explain analyze B-tree performance"),
 ]
+
+
+# ── Document discovery ────────────────────────────────────────────────────────
+def load_documents():
+    """Read all .txt files from DOCS_DIR. Returns list of (key, title, content)."""
+    if not os.path.isdir(DOCS_DIR):
+        print(f"  [WARN] {DOCS_DIR} not found — no documents to upload.", file=sys.stderr)
+        return []
+
+    docs = []
+    for fname in sorted(os.listdir(DOCS_DIR)):
+        if not fname.endswith(".txt"):
+            continue
+        path  = os.path.join(DOCS_DIR, fname)
+        title = fname[:-4].replace("-", " ").replace("_", " ").title()
+        with open(path, encoding="utf-8") as f:
+            content = f.read().strip()
+        # First non-empty line is often a better title than the filename
+        first_line = next((l.strip() for l in content.splitlines() if l.strip()), title)
+        docs.append((fname, first_line, content))
+    return docs
 
 
 # ── Word-hash embedding (pure Python, no deps) ───────────────────────────────
@@ -143,7 +111,7 @@ def sql(q, label="", quiet=False):
     return body
 
 
-_storage_ok = None  # None = unchecked, True = working, False = 503/unconfigured
+_storage_ok = None
 
 
 def _check_storage():
@@ -237,19 +205,27 @@ def main():
     print("\n══ Document Upload + Embedding Search ═══════════════════════════════")
     print("  MinIO = blob store  │  unidb = vector index + metadata\n")
 
-    # ── 1. Create MinIO bucket ────────────────────────────────────────────────
-    print("── Step 1: Create storage bucket ────────────────────────────────────")
-    create_bucket(BUCKET)
+    # ── Discover documents ────────────────────────────────────────────────────
+    docs = load_documents()
+    if not docs:
+        print("  No .txt files found in demo/documents/ — nothing to do.")
+        return
+    print(f"  Found {len(docs)} document(s) in {DOCS_DIR}:")
+    for key, title, content in docs:
+        print(f"    {key}  ({len(content)} chars)")
 
+    # ── 1. Create MinIO bucket ────────────────────────────────────────────────
+    print("\n── Step 1: Create storage bucket ────────────────────────────────────")
+    create_bucket(BUCKET)
     storage_live = _check_storage()
 
-    # ── 2. Upload documents to MinIO ─────────────────────────────────────────
+    # ── 2. Upload all documents to MinIO ─────────────────────────────────────
     print("\n── Step 2: Upload documents to MinIO ────────────────────────────────")
     if not storage_live:
-        print("  [INFO] MinIO not running — skipping upload, using inline content.")
+        print("  [INFO] MinIO not running — skipping upload, embedding inline content.")
         print("         Start with:  cd demo && docker-compose -f docker-compose.demo.yml up -d")
     else:
-        for key, title, content in SAMPLE_DOCS:
+        for key, title, content in docs:
             ok = storage_put(BUCKET, key, content)
             print(f"  PUT  {BUCKET}/{key}  ({len(content)} chars)  → {'ok' if ok else 'FAIL'}")
 
@@ -266,24 +242,19 @@ def main():
     sql("CREATE INDEX doc_emb_hnsw ON doc_embeddings USING HNSW (embedding)",
         "create HNSW index")
 
-    # ── 4. Read documents back from MinIO (or inline), embed, insert ──────────
+    # ── 4. Embed and insert all documents ────────────────────────────────────
     print("\n── Step 4: Embed documents and store in unidb ───────────────────────")
     rows = []
     t0   = time.perf_counter()
-    # Build a lookup from key → inline content as fallback
-    inline = {key: content for key, _, content in SAMPLE_DOCS}
-    for i, (key, title, _) in enumerate(SAMPLE_DOCS):
-        if storage_live:
-            fetched = storage_get(BUCKET, key)
-            content = fetched if fetched else inline[key]
-        else:
-            content = inline[key]
-        vec     = embed(f"{title} {content}")
-        snippet = content[:200].replace("\n", " ").strip()
+    for i, (key, title, content) in enumerate(docs):
+        fetched = storage_get(BUCKET, key) if storage_live else None
+        text    = fetched if fetched else content
+        vec     = embed(f"{title} {text}")
+        snippet = text[:200].replace("\n", " ").strip()
         source  = f"{BUCKET}/{key}" if storage_live else f"inline/{key}"
         rows.append({"id": i+1, "title": title, "source_key": source,
                      "snippet": snippet, "embedding": vec})
-        print(f"  Embedded [{i+1}] {title}")
+        print(f"  Embedded [{i+1}/{len(docs)}] {title}")
     resp = bulk_insert("doc_embeddings", rows)
     ms   = (time.perf_counter() - t0) * 1000
     print(f"  Stored {resp.get('inserted')} embeddings in {ms:.0f} ms")
@@ -295,32 +266,39 @@ def main():
         q_lit = json.dumps(q_vec)
         t0    = time.perf_counter()
         res   = sql(
-            f"SELECT id, title, source_key, vec_distance FROM doc_embeddings WHERE NEAR(embedding, {q_lit}, 3)",
+            f"SELECT id, title, source_key, vec_distance FROM doc_embeddings"
+            f" WHERE NEAR(embedding, {q_lit}, {len(docs)}) AND vec_distance < 1.3",
             quiet=True,
         )
         ms   = (time.perf_counter() - t0) * 1000
         rows = (res.get("results") or [{}])[0].get("rows", [])
         print(f"\n  Query: \"{q_label}\"  ({ms:.1f} ms)")
-        for r in rows:
-            print(f"    → [{r[0]}] {r[1]:<45s}  dist={float(r[3]):.4f}")
-            print(f"       source: {r[2]}")
+        if rows:
+            for r in rows:
+                print(f"    → [{r[0]}] {r[1]:<50s}  dist={float(r[3]):.4f}")
+                print(f"       source: {r[2]}")
+        else:
+            print("    (no matches within distance 1.3)")
 
+    # ── 6. Retrieve a document from MinIO ─────────────────────────────────────
     print("\n── Step 6: Retrieve original document from MinIO ────────────────────")
-    key     = SAMPLE_DOCS[1][0]   # vector-search-intro.txt
-    content = storage_get(BUCKET, key) if storage_live else None
+    first_key = docs[0][0]
+    content   = storage_get(BUCKET, first_key) if storage_live else None
     if content:
-        print(f"  Retrieved  {BUCKET}/{key}  ({len(content)} chars)")
+        print(f"  Retrieved  {BUCKET}/{first_key}  ({len(content)} chars)")
         print(f"  Preview: {content[:120].strip()}…")
     else:
         print("  [SKIP] MinIO not running — open Studio → Storage tab after docker-compose")
 
     print("\n✓ Pipeline complete.")
-    print("  MinIO stores the raw files. unidb stores embeddings + metadata.")
-    print("  NEAR() finds the closest embeddings in μs via HNSW.\n")
-    print("  Open Studio → Storage tab to browse the uploaded files.")
-    print("  Open Studio → SQL tab and run:")
-    print("    SELECT title, source_key FROM doc_embeddings")
-    print("    WHERE NEAR(embedding, <your_query_vector>, 5)\n")
+    print(f"  {len(docs)} document(s) uploaded to MinIO bucket '{BUCKET}'.")
+    print("  unidb stores embeddings + metadata. NEAR() finds closest in μs via HNSW.\n")
+    print("  Open Studio → Storage tab to browse uploaded files.")
+    print("  Open Studio → SQL editor → Embed button to run your own searches:\n")
+    print("    SELECT id, title, source_key, vec_distance")
+    print("    FROM doc_embeddings")
+    print(f"    WHERE NEAR(embedding, [...], {len(docs)})")
+    print("      AND vec_distance < 1.3;\n")
 
 
 if __name__ == "__main__":
