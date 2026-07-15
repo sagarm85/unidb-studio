@@ -473,7 +473,7 @@
           <button class="embed-btn primary" onclick={insertVector} title="Insert vector at cursor position in the editor">Insert</button>
         </div>
         <div class="embed-tip">
-          {#if nonZero <= 2}Use more descriptive words to activate more dimensions and improve match accuracy.{:else}Ready — click Insert. Filter noise with <code>vec_distance &lt; 1.3</code> in a subquery — results above 1.3 are likely hash collisions. Single-word queries score ~1.1–1.3 even on genuine matches; use 5+ words for tighter distances.{/if}
+          {#if nonZero <= 2}Use more descriptive words to activate more dimensions and improve match accuracy.{:else}Ready — click Insert. Add <code>vec_distance</code> to SELECT to see match scores (below 1.3 = relevant, above = noise). Never put it in WHERE — the engine only exposes it in SELECT. Use 5+ words for tighter distances.{/if}
         </div>
       {:else}
         <span class="embed-hint">word-hash → 64-dim vector · more words = better results · matches demo/vector_demo.py</span>
