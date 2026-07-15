@@ -10,7 +10,7 @@
   // shared catalog after an insert/update/delete/DDL.
   let { table, relationships = [], editable = false, onChanged = null } = $props();
 
-  const PAGE = 50;
+  const PAGE = 100;
 
   // Filter operators the engine actually supports. `valueless` ops (IS NULL /
   // IS NOT NULL) bind no value. NOTE: unidb has no `LIKE` — substring/pattern

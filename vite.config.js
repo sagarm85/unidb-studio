@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const TOKEN_KEY = 'VITE_UNIDB_TOKEN'
-const TTL_SECONDS = 3600
+const TTL_SECONDS = 365 * 24 * 3600   // 1 year — dev token, never needs manual refresh
 // Don't hand out a token about to die under the caller: below this remaining
 // lifetime we mint a fresh one instead of returning the env token.
 const MIN_REMAINING_SECONDS = 60

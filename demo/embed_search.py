@@ -295,14 +295,14 @@ def main():
         q_lit = json.dumps(q_vec)
         t0    = time.perf_counter()
         res   = sql(
-            f"SELECT id, title, source_key FROM doc_embeddings WHERE NEAR(embedding, {q_lit}, 3)",
+            f"SELECT id, title, source_key, vec_distance FROM doc_embeddings WHERE NEAR(embedding, {q_lit}, 3)",
             quiet=True,
         )
         ms   = (time.perf_counter() - t0) * 1000
         rows = (res.get("results") or [{}])[0].get("rows", [])
         print(f"\n  Query: \"{q_label}\"  ({ms:.1f} ms)")
         for r in rows:
-            print(f"    → [{r[0]}] {r[1]}")
+            print(f"    → [{r[0]}] {r[1]:<45s}  dist={float(r[3]):.4f}")
             print(f"       source: {r[2]}")
 
     print("\n── Step 6: Retrieve original document from MinIO ────────────────────")
