@@ -176,16 +176,26 @@ def storage_put(bucket, key, content: str) -> bool:
 
 
 def storage_get(bucket, key) -> str | None:
+    """Download object via presigned URL (C7 → MinIO direct fetch)."""
     if not _check_storage():
         return None
+    # Step 1: get presigned GET URL from engine
     req = urllib.request.Request(
-        f"{BASE}/storage/{bucket}/objects/{key}",
+        f"{BASE}/storage/{bucket}/presign/{key}",
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            url = json.loads(r.read()).get("presigned_get_url")
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return None
+    if not url:
+        return None
+    # Step 2: fetch directly from MinIO using the presigned URL (no auth header)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
             return r.read().decode()
-    except urllib.error.HTTPError:
+    except Exception:
         return None
 
 
