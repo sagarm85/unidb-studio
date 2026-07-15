@@ -125,8 +125,8 @@
   }
 </script>
 
-<div class="obs" bind:this={obsEl}>
-  <!-- Subtab nav — deliberately separate from the live/refresh controls -->
+<div class="obs">
+  <!-- Header sits outside the scroll area so it can never scroll off screen -->
   <div class="obs-header">
     <div class="subtabs">
       <button class:active={subTab === 'overview'} onclick={() => switchTab('overview')}>Overview</button>
@@ -144,6 +144,8 @@
       Refresh
     </button>
   </div>
+
+  <div class="obs-body" bind:this={obsEl}>
 
   {#if error}
     <ErrorBox {error} />
@@ -410,32 +412,38 @@
 
     {/if}
   {/if}
+
+  </div><!-- end obs-body -->
 </div>
 
 <style>
   .obs {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding-bottom: 24px;
-    /* Own scroll context so position:sticky on .obs-header works reliably
-       inside the flex .panel parent (sticky is unreliable in flex children) */
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
-  /* ── header (subtabs + controls) ── */
+  /* ── header (subtabs + controls) — never scrolls, always visible ── */
   .obs-header {
     display: flex;
     align-items: center;
     gap: 10px;
     padding-bottom: 2px;
     border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    background: var(--bg);
+    flex-shrink: 0;
+  }
+
+  /* ── scrollable content area ── */
+  .obs-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-bottom: 24px;
   }
   .subtabs {
     display: flex;
