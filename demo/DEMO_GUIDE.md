@@ -1,64 +1,52 @@
 # unidb Studio — Demo Guide
 
-Full demo running order. Each part is independent; run them in sequence or pick any section.
+> **Two parts:** Part 1 is setup (run before the audience arrives). Part 2 is the live script (follow in order during the demo).
 
 ---
 
-## 0. Clean start
+## Part 1 — Pre-demo setup
+
+Allow **15–20 minutes** before the demo. Run every step in order.
+
+---
+
+### Step 1 — Clean slate
 
 ```bash
-# Kill any running processes and free ports
+# Kill anything on the ports
 pkill -f unidb-server-full; pkill -f vite
 lsof -ti:5173 | xargs kill -9 2>/dev/null || true
 lsof -ti:8080 | xargs kill -9 2>/dev/null || true
 
-# Wipe engine data (tables, WAL, indexes — everything)
+# Wipe engine data (tables, WAL, indexes)
 rm -rf /tmp/unidb-demo-data && mkdir -p /tmp/unidb-demo-data
-
-# If using Docker demo (Postgres comparison), wipe volumes too:
-cd demo && docker-compose -f docker-compose.demo.yml down -v && cd ..
 ```
-
-> **"clean" means `/tmp/unidb-demo-data` is wiped.** The binary, JWT, and Studio source are untouched.
 
 ---
 
-## 1. Start the stack
-
-### Option A — local binary + MinIO (Storage tab)
+### Step 2 — Start MinIO (Storage + document embedding)
 
 ```bash
-# Step 1 — start MinIO (one-time; the createbucket service makes the `unidb` bucket)
-
 cd /path/to/unidb
 docker compose -f docker/docker-compose.minio.yml up -d
+```
 
-# MinIO S3 API: http://localhost:9000
-# MinIO console: http://localhost:9001  (minioadmin / minioadmin)
+Verify:
+```bash
+curl -sf http://localhost:9000/minio/health/live && echo "MinIO ready"
+```
 
-# Step 2 — build engine then start in background (logs → /tmp/unidb.log)
-# Release is the default: seed.py / benchmark.py / compare.py are all
-# perf-sensitive, and a debug build is ~10-50× slower on the write path
-# (index-backed constraint checks are unoptimized without --release) —
-# it LOOKS like a regression, it's just the wrong build profile.
+MinIO console → http://localhost:9001 (minioadmin / minioadmin)
 
-cargo build --release -p unidb-server-full        # release (fast runtime — use this)
+---
 
-# cargo build -p unidb-server-full                # debug (fast compile; only for iterating on server source itself)
+### Step 3 — Build and start the engine
 
-# UNIDB_BUFFER_POOL_PAGES: raise this for seeds past ~30k rows/table, or the
-# default (4096 pages = 32MB) exhausts mid-load and forces a synchronous WAL
-# fsync on every write once it's full — throughput collapses to ~1-2k rows/s
-# even on a correct, current build. This is NOT a Postgres shared_buffers-style
-# RAM budget: unidb is mmap-backed, so page bytes already live in the OS page
-# cache "for free" — the pool is just pin/dirty tracking metadata, ~24 bytes
-# per frame. 1,000,000 frames (covers the 1M/5M presets with headroom) costs
-# ~24MB of bookkeeping, not the ~8GB a naive frames×page_size calc implies.
-# Measured: 1.5M-row seed with this setting -> 0 buffer-pool evictions, 250MB
-# total process RSS, customers flat at ~23-25k rows/s (vs ~1-2k/s at default).
-# Tradeoff: a bigger pool allows more dirty pages to accumulate before a
-# checkpoint, so a crash mid-load means a longer ARIES redo replay on next
-# open — not a RAM cost, a recovery-time one.
+```bash
+cd /path/to/unidb
+
+# First build takes 2–5 min; subsequent starts are instant (binary is cached)
+cargo build --release -p unidb-server-full
 
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
@@ -73,124 +61,155 @@ nohup env \
   STORAGE_FORCE_PATH_STYLE=true \
   ./target/release/unidb-server-full > /tmp/unidb.log 2>&1 < /dev/null &
 
-  # swap release/ → debug/ only if you built the debug line above
-# To tail logs: tail -f /tmp/unidb.log
-# To stop:      pkill -f unidb-server-full
-
-# Step 3 — Studio dev server (logs → /tmp/studio.log)
-# < /dev/null prevents Vite from suspending on tty input when backgrounded
-
-nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
-
-# Open http://localhost:5173
-# To tail logs: tail -f /tmp/studio.log
+# Wait until ready
+until curl -sf http://localhost:8080/stats > /dev/null; do sleep 1; done && echo "Engine ready"
 ```
 
-> The Storage tab will now show the `unidb` bucket. To stop MinIO:
-> `docker compose -f docker/docker-compose.minio.yml down`
-> (add `-v` to wipe stored objects too)
-
-### Option B — full Docker stack (unidb + Postgres + MinIO)
-
-Use this when you want to run **section 3 (Postgres comparison)**. It starts
-unidb, Postgres 16, and MinIO together in Docker — no local Rust build needed.
-
-**Prerequisite:** both repos must be siblings on disk:
-```
-AI_World/
-  unidb/          ← engine repo (docker-compose builds from here)
-  unidb-studio/   ← this repo
-```
-
-```bash
-# From unidb-studio root — builds the unidb image from ../unidb and starts all three services
-docker compose -f demo/docker-compose.demo.yml up -d --build
-
-# First build takes 2-5 min (compiles the Rust engine); subsequent starts are instant.
-# Services exposed:
-#   8080  unidb HTTP API
-#   5432  Postgres 16       (user=demo  password=demo  db=demo)
-#   9000  MinIO S3 API
-#   9001  MinIO web console  http://localhost:9001  (minioadmin / minioadmin)
-
-# Wait for unidb to be ready (health check polls /stats):
-until curl -sf http://localhost:8080/stats > /dev/null; do sleep 2; done && echo "unidb ready"
-
-# Studio dev server (same as Option A — not included in docker-compose)
-nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
-# Open http://localhost:5173
-```
-
-> **To stop:** `docker compose -f demo/docker-compose.demo.yml down`  
-> **To wipe all data:** `docker compose -f demo/docker-compose.demo.yml down -v`
+> Logs: `tail -f /tmp/unidb.log` · Stop: `pkill -f unidb-server-full`
 
 ---
 
-## 2. E-commerce schema + seed
+### Step 4 — Start the Studio
 
 ```bash
-# Create 6 tables with FK constraints
-python3 demo/setup_schema.py
+# From unidb-studio root
+nohup npm run dev > /tmp/studio.log 2>&1 < /dev/null &
 
-# Seed — start at 10k, scale up for bigger demo.
-# Measured end-to-end (release build, UNIDB_BUFFER_POOL_PAGES=1000000 per
-# Step 2 above, fresh schema each run) — the old estimates here predated the
-# release-build default and the buffer-pool fix and were off by ~15-25x.
-python3 demo/seed.py --size 10k    # ~15k rows,   ~1s
-python3 demo/seed.py --size 50k    # ~75k rows,   ~4s
-python3 demo/seed.py --size 200k   # ~300k rows,  ~19s
-python3 demo/seed.py --size 1M     # ~1.5M rows,  ~1.5 min
-python3 demo/seed.py --size 5M     # ~4M rows,    ~4 min
-python3 demo/seed.py --size 10M    # ~8M rows,    ~8.5 min
+until curl -sf http://localhost:5173 > /dev/null 2>&1; do sleep 1; done && echo "Studio ready"
 ```
 
-**Studio walkthrough after seeding:**
+Open **http://localhost:5173**
 
-| Tab | What to show |
-|-----|-------------|
-| **Schema** | Six tables with FK relationship arrows (customers → orders → order_items, etc.) |
-| **Records** | Browse `customers` table — 5k rows, pagination, column filter |
-| **SQL** | Run `SELECT p.category, SUM(oi.line_total) FROM order_items oi JOIN products p ON p.id = oi.product_id GROUP BY p.category ORDER BY 2 DESC` |
-| **Query Performance** | Engine insert p50/p99 μs (B-tree cost), SELECT latency after the JOIN above |
-| **Observability** | Live WAL bytes, commit count, buffer pool hit ratio |
+---
 
-### 2a. Schema graph (best shown here, before SQL queries)
+### Step 5 — Seed the e-commerce schema
 
-Open **Studio → Schema tab** immediately after seeding. Key talking points:
+```bash
+# From unidb-studio root
+python3 demo/setup_schema.py          # creates 6 tables with FK constraints
 
-- **Six tables, FK arrows drawn automatically** from the live catalog — no separate ERD tool needed.
+python3 demo/seed.py --size 50k       # ~75k rows, ~4s  ← good default
+# python3 demo/seed.py --size 200k   # ~300k rows, ~19s  ← larger demo
+# python3 demo/seed.py --size 1M     # ~1.5M rows, ~1.5 min ← impressive numbers
+```
+
+---
+
+### Step 6 — Load vector + document data
+
+```bash
+python3 demo/embed_search.py
+# Creates doc_embeddings table, uploads 6 docs to MinIO, inserts embeddings
+```
+
+---
+
+### Step 7 — Postgres comparison (optional)
+
+Skip if Docker Hub was unreachable — the rest of the demo works without it.
+
+```bash
+# Start Postgres (small image, no Rust compile)
+docker run -d --name pg-demo \
+  -e POSTGRES_USER=demo \
+  -e POSTGRES_PASSWORD=demo \
+  -e POSTGRES_DB=demo \
+  -p 5432:5432 \
+  postgres:16-alpine
+
+# Wait until ready
+until docker exec pg-demo pg_isready -U demo 2>/dev/null; do sleep 1; done && echo "Postgres ready"
+
+# Seed both unidb and Postgres, write Studio Compare tab data
+python3 demo/compare.py --size 10k
+```
+
+> Stop Postgres after demo: `docker rm -f pg-demo`
+
+---
+
+### Step 8 — Pre-demo checklist
+
+Run through this before the audience arrives:
+
+| # | Check | How to verify |
+|---|-------|--------------|
+| 1 | Engine running | `curl -sf http://localhost:8080/stats` → returns JSON |
+| 2 | Studio loads | Open http://localhost:5173 — no "Not configured" banner |
+| 3 | Schema visible | Studio → Schema tab → 6 table boxes with FK arrows |
+| 4 | Data seeded | Studio → Records → customers → rows appear |
+| 5 | Vector table ready | SQL editor: `SELECT COUNT(*) FROM doc_embeddings;` → 6 |
+| 6 | Storage populated | Studio → Storage tab → `documents/` bucket with 6 files |
+| 7 | Compare data ready | Studio → Compare tab → bar chart visible *(if Step 7 done)* |
+
+---
+
+## Part 2 — Live demo script
+
+Follow **in this order**. Each section has a time estimate and exact Studio navigation.
+
+---
+
+### Scene 1 — Schema: visual data model  *(2 min)*
+
+**Studio → Schema tab**
+
+What to say:
+> "This is the live schema — FK relationships drawn automatically from the engine catalog. No separate ERD tool, no diagram that drifts from reality."
+
+What to show:
+- Six table nodes with FK arrows between them:
   ```
   customers ──< orders ──< order_items >── products
                   │
-                  └──< invoices
-                         │
-                         └──< payments
+                  └──< invoices ──< payments
   ```
-- Click any table node to highlight its FK edges and see column types.
-- The graph is live: add a table in SQL → refresh → it appears immediately.
+- Click a table node — FK edges highlight, column list appears
+- "Add a table in SQL, hit refresh — it appears here immediately"
 
-**Why it matters for the demo:** most teams maintain a separate draw.io/dbdiagram file that drifts from reality. unidb surfaces the actual schema from the engine catalog — it's always in sync.
+**Why this lands:** every team has a draw.io diagram that's six months out of date. unidb reads the actual catalog.
 
-**Then go straight to SQL editor** and run the JOIN query below. The audience already understands the join path from the graph, so the query reads naturally.
+---
 
-### Complex query — 50 k rows from 5 M (good for 5M+ seeds)
+### Scene 2 — Records: browse live data  *(1 min)*
 
-Run this in Studio → **SQL editor** after seeding at `--size 5M` or larger.
-It performs a 4-table join with GROUP BY + HAVING + ORDER BY — a realistic
-read-heavy analytics workload across millions of rows.
+**Studio → Records → select `customers` from the sidebar**
+
+What to show:
+- 100 rows per page, paginated across all N rows
+- Column filter (top-right input) — type a city name to narrow
+- Click a row to expand the full record
+- "All reads go through the same authenticated REST API your application uses"
+
+---
+
+### Scene 3 — SQL: analytics query  *(2 min)*
+
+**Studio → SQL editor**
+
+Run this first (simple, fast result):
 
 ```sql
--- Revenue & invoice analytics per customer — up to 50 k rows from 5 M dataset
--- Expect: multi-second runtime; watch p99 spike in Observability → Query Performance
+SELECT p.category, SUM(oi.line_total) AS revenue
+FROM order_items oi
+JOIN products p ON p.id = oi.product_id
+GROUP BY p.category
+ORDER BY revenue DESC;
+```
+
+Then run the full 4-table analytics query:
+
+```sql
+-- Revenue and invoice breakdown per customer
 SELECT
-    c.id             AS customer_id,
-    c.name           AS customer_name,
+    c.id                 AS customer_id,
+    c.name               AS customer_name,
     c.city,
     c.country,
-    COUNT(o.id)      AS order_count,
+    COUNT(o.id)          AS order_count,
     SUM(oi.line_total)   AS order_revenue,
     AVG(oi.unit_price)   AS avg_unit_price,
-    COUNT(i.id)      AS invoice_count,
+    COUNT(i.id)          AS invoice_count,
     SUM(i.total_amount)  AS total_invoiced,
     MAX(o.created_at)    AS last_order_at
 FROM customers c
@@ -203,272 +222,209 @@ ORDER BY order_revenue DESC
 LIMIT 50000;
 ```
 
-**What to show:**
-
-| Observability tab | Expected |
-|---|---|
-| Query Performance → Statement latency | `select` p99 spikes into 100s ms range |
-| Overview → Commits/sec | Flat (read-only query) |
-| Overview → Buffer pool hit ratio | Should stay high (>90%) on repeat runs |
+What to say:
+> "Four-table join, GROUP BY, HAVING, ORDER BY across hundreds of thousands of rows. After this runs, switch to Observability to see the latency spike."
 
 ---
 
-## 3. Postgres comparison
+### Scene 4 — Observability: live engine metrics  *(2 min)*
 
-> Requires Docker (Option B above). Produces `public/benchmark-results.json` for the Studio Compare tab.
+**Studio → Observability tab → Overview**
 
+What to point at:
+- **Cache hit rate** — should be >90% after the join query above ran twice
+- **WAL throughput** — spikes during writes, flat on reads
+- **Active transactions** — watch it tick during the CDC demo later
+- **Commits/sec** — flat right now (read-only workload)
+
+What to say:
+> "These charts update every 5 seconds from the engine's internal stats API. No external monitoring agent needed."
+
+Run the 4-table query again while the Observability tab is visible — the cache hit chart responds in the next poll.
+
+---
+
+### Scene 5 — Query Performance: latency breakdown  *(1 min)*
+
+**Studio → Observability tab → Query Performance**  *(click the subtab in the header)*
+
+What to show:
+- **Statement latency table** — p50 / p99 per query kind (SELECT, INSERT, UPDATE, DELETE)
+  - SELECT p99 should show the spike from the JOIN query
+- **Query history** — every SQL run from this browser session, with round-trip time in ms
+  - Colour-coded: green < 50 ms, yellow 50–500 ms, red > 500 ms
+
+---
+
+### Scene 6 — Events: real-time CDC  *(2 min)*
+
+**Split screen: Studio on the left, terminal on the right**
+
+Studio side:
+1. **Studio → Events tab**
+2. Select table `orders` from the dropdown
+3. Click **Enable**
+4. Click **Start**
+
+Terminal side:
 ```bash
-python3 demo/compare.py --size 10k
-# Then open Studio → Compare tab
+python3 demo/events_demo.py
 ```
 
-The Compare tab shows horizontal bars: unidb (blue-accent) vs Postgres (blue `#336791`) per query. A verdict banner shows total time and speedup/slowdown ratio.
+Watch in Studio:
+- 3 × **INSERT** events appear immediately (new pending orders)
+- 3 × **UPDATE** events (`pending → confirmed`)
+- 1 × **DELETE** event
 
-For a more dramatic comparison run `--size 50k` or `--size 200k`.
+Click any event row → detail drawer opens with the full JSON payload (before/after values for UPDATE).
 
----
+What to say:
+> "Every committed write fires an SSE event in under 5 milliseconds. No polling, no Kafka, no change-data-capture middleware — it's built into the transaction log."
 
-## 4. Events / real-time CDC
-
-### What it demonstrates
-Every committed INSERT / UPDATE / DELETE fires an event on the SSE stream in **< 5 ms**. No polling — the Studio Events tab updates the moment the transaction commits.
-
-### Steps
-
-**Terminal / Studio split-screen:**
-
-1. Studio → **Events tab** → select table `orders` → click **Enable** → click **Start**
-2. In a new terminal:
-   ```bash
-   python3 demo/events_demo.py
-   ```
-3. Watch events appear in the Studio Events tab in real-time:
-   - 3 × `INSERT` events (new pending orders)
-   - 3 × `UPDATE` events (`pending → confirmed`)
-   - 1 × `DELETE` event
-
-### Manual demo in SQL editor
+**Or demonstrate manually in the SQL editor:**
 
 ```sql
--- Enable CDC on orders (one-time)
--- (done by the script, or via Studio Events tab)
-
--- INSERT → fires event immediately
 INSERT INTO orders (id, customer_id, status, total_amount, created_at)
 VALUES (99999, 1, 'pending', 149.99, 1700000000);
 
--- UPDATE → fires UPDATE event with before/after
 UPDATE orders SET status = 'shipped' WHERE id = 99999;
 
--- DELETE → fires DELETE event with old row
 DELETE FROM orders WHERE id = 99999;
 ```
 
-**Studio Events tab columns:** seq, operation (INSERT/UPDATE/DELETE chip), table, txn ID, row data (payload). Click any row to open a detail drawer showing the full JSON payload formatted with indentation.
-
 ---
 
-## 5. Vector search (NEAR)
+### Scene 7 — Vector search: NEAR()  *(3 min)*
 
-### What it demonstrates
-unidb stores `VECTOR(n)` columns and builds an **HNSW** approximate nearest-neighbour index. `WHERE NEAR(col, <vector>, k)` returns the k closest rows in **sub-millisecond** time.
+**Studio → SQL editor**
 
-### How vector search actually works
-
-> **Plain-English searches don't go directly into SQL.** Every vector database
-> (unidb, pgvector, Pinecone, Qdrant) works the same way:
->
-> ```
-> Your text: "wireless headphones"
->       ↓  embed() — your Python code, sentence-transformers, OpenAI, etc.
->  [0.12, 0.04, 0.31, ...]   ← numeric vector the engine can compare
->       ↓
->  WHERE NEAR(embedding, [...], 3)
-> ```
->
-> Text → vector conversion is an **application-layer step**.
-> The engine stores and ranks `f32` arrays; it has no built-in language model.
-> The demo script (`vector_demo.py`) does this conversion for you — you pass a
-> text query string, it embeds it, then queries unidb with the resulting vector.
-
-```bash
-python3 demo/vector_demo.py
+First show the data:
+```sql
+SELECT id, title FROM documents LIMIT 12;
 ```
 
-**What the script does:**
-1. Creates `documents` table with `VECTOR(64)` column
-2. `CREATE INDEX USING HNSW` on the embedding column
-3. Inserts 12 product descriptions — each converted to a 64-dim vector by `embed(text)`
-4. Runs 4 text searches (converted to vectors automatically):
-   - `"wireless headphones noise cancellation audio earbuds bluetooth"` → finds headphone products
-   - `"laptop stand desk ergonomic monitor USB hub keyboard"` → finds desk/office items
-   - `"running shoes trail fitness yoga resistance training"` → finds fitness gear
-   - `"air quality CO2 humidity sensor smart home"` → finds air quality devices
-5. Prints top-3 nearest neighbours per query with round-trip time
-
-**Studio SQL editor — try it live:**
+Then show NEAR in action — use the **Embed button** (top-right of the SQL editor toolbar):
+1. Click **Embed**
+2. Type: `wireless headphones noise cancellation bluetooth`
+3. Click **Insert** — a 64-dim float vector fills the cursor position
+4. Complete the query and run:
 
 ```sql
--- See the documents table and their stored titles
-SELECT id, title FROM documents;
-```
-
-Then open the **SQL editor → Embed** button (toolbar, top-right of the editor).
-Type any plain-English query — e.g. `wireless headphones noise cancellation` —
-and click **Insert** to drop the pre-computed 64-dim vector straight into your
-NEAR() clause at the cursor. No terminal needed.
-
-**Try it live in the SQL editor:**
-
-Use the **Embed** button in the SQL editor toolbar: type your search text →
-click **Insert** → the 64-dim vector is placed at the cursor automatically.
-
-```sql
--- Use Studio → SQL editor → Embed button to generate [...] from plain text
--- vec_distance is SELECT-only — put it in SELECT, not WHERE
 SELECT id, title, vec_distance
 FROM documents
-WHERE NEAR(embedding, [...], 10);  -- fetch 10 candidates
--- then read the vec_distance column: below 1.3 = relevant, above = noise
+WHERE NEAR(embedding, [...], 10);
 ```
 
-> **Do not** put `vec_distance` in a WHERE clause — the engine only exposes it
-> as a virtual SELECT column and will return `COLUMN_NOT_FOUND` if you try to
-> filter on it. Discard noisy rows in your application after fetching results.
-
-`vec_distance` is the Euclidean distance between the stored vector and your
-query vector (lower = closer). NEAR() always returns k rows regardless of
-quality — interpret the distance column to separate signal from noise:
+Read the `vec_distance` column in results:
 
 | vec_distance | Meaning |
 |---|---|
-| < 0.8 | Strong match — many shared words |
-| 0.8 – 1.3 | Plausible match — some overlap (single-word queries land here) |
-| > 1.3 | Likely noise (word-hash collision) |
+| < 0.8 | Strong match |
+| 0.8 – 1.3 | Plausible match |
+| > 1.3 | Noise (hash collision) |
 
-> **Why does "Laptop" return unrelated results?**  
-> Single-word queries activate only 1 of 64 dimensions. Other words in
-> unrelated documents can hash to the same bucket by coincidence, producing
-> false positives. The distance filter removes them. Use multi-word queries
-> ("USB laptop stand ergonomic") for best results with word-hash embeddings.
+> `vec_distance` is available in SELECT only — never put it in WHERE.
 
-### Upgrade to real semantic embeddings
-
-```python
-# Replace embed() in vector_demo.py / embed_search.py with:
-from sentence_transformers import SentenceTransformer
-_model = SentenceTransformer('all-MiniLM-L6-v2')   # 384-dim, ~80 MB
-
-def embed(text: str) -> list[float]:
-    return _model.encode(text).tolist()
-
-# Change DIM = 384, and CREATE TABLE ... embedding VECTOR(384)
-# Usage stays identical: embed("wireless headphones") → vector → NEAR()
-```
+What to say:
+> "The Studio converts plain English to a 64-dimension vector client-side, no embedding service required. The engine uses an HNSW index to answer in microseconds. In production you'd swap our word-hash function for OpenAI or sentence-transformers — the SQL surface is identical."
 
 ---
 
-## 6. Document upload + embedding search
+### Scene 8 — Document search: Storage + embeddings  *(2 min)*
 
-### What it demonstrates
-Full pipeline: **MinIO stores raw files** → **unidb stores vectors + metadata** → `NEAR()` finds semantically similar documents → results include the MinIO object key for direct download.
+**Studio → Storage tab**
+- Open the `documents/` bucket — 6 text files uploaded by `embed_search.py`
+- Click a file name to download via presigned URL
 
-```bash
-# Start MinIO (either Docker compose, or local minio server)
-python3 demo/embed_search.py
+**Studio → Records → `doc_embeddings`**
+- Show title, source_key (MinIO path), snippet, and raw VECTOR column
+
+**Studio → SQL editor**
+
+```sql
+SELECT title, source_key, vec_distance
+FROM doc_embeddings
+WHERE NEAR(embedding, [...], 6);
 ```
 
-**Pipeline steps:**
-1. Creates bucket `documents` in MinIO
-2. Uploads 6 text documents via `PUT /storage/documents/objects/{key}`
-3. Reads each document back from MinIO
-4. Generates word-hash embedding (swap for sentence-transformers in production)
-5. Stores `(id, title, source_key, snippet, embedding VECTOR(64))` in unidb
-6. Runs 4 semantic searches via `WHERE NEAR(embedding, [...], 3)`
-7. Returns results with the MinIO `source_key` so you can download originals
+Use Embed button with: `crash recovery write ahead log durability`
 
-**Studio walkthrough after the script:**
-
-| Tab | What to show |
-|-----|-------------|
-| **Storage** | `documents/` bucket → 6 text files uploaded, downloadable |
-| **Records** | `doc_embeddings` table — snippet, source_key, VECTOR values |
-| **SQL** | Run NEAR query live: `SELECT title, source_key FROM doc_embeddings WHERE NEAR(embedding, [...], 3)` |
-
-### Architecture diagram
-
-```
-User uploads PDF/TXT
-        │
-        ▼
-PUT /storage/documents/objects/key   ← MinIO stores raw bytes
-        │
-        ▼ (script or background worker reads it)
-embed(content) → [f32; 384]
-        │
-        ▼
-INSERT INTO doc_embeddings (title, source_key, embedding)
-        │
-        ▼
-WHERE NEAR(embedding, query_vec, k)  ← HNSW index answers in μs
-        │
-        ▼
-result rows contain source_key → GET /storage/documents/objects/key
-```
+What to say:
+> "MinIO stores the raw files. unidb stores the vectors and metadata. NEAR() finds the closest documents in microseconds. The source_key links back to the original file in object storage."
 
 ---
 
-## 7. Benchmark queries (after seeding)
+### Scene 9 — Postgres comparison: bar chart  *(2 min)*
 
+*Skip this scene if Step 7 of setup was skipped.*
+
+**Studio → Compare tab**
+
+What to show:
+- Horizontal bar chart: unidb (accent colour) vs Postgres 16 (blue) per benchmark query
+- Verdict banner: total elapsed time + speedup/slowdown ratio
+
+For a more dramatic result, run a larger seed from the terminal and reload:
 ```bash
-python3 demo/benchmark.py
+python3 demo/compare.py --size 50k
+# Reload Studio → Compare tab
 ```
 
-Watch the **Observability tab** during the bulk UPDATE — the `update` latency gauge spikes then recovers.
+What to say:
+> "Same schema, same queries, same hardware. The Compare tab writes a JSON file — any CI pipeline can track this over time."
 
-Sample output at 50k size:
-```
-── Benchmark queries ─────────────────────────────────────────────────────
-     12.4 ms  COUNT customers             →  5000
-      8.1 ms  COUNT orders                →  10000
-     18.6 ms  COUNT order_items           →  30000
-      7.3 ms  Orders by status (delivered) → 2018
-    142.3 ms  Top 10 customers by revenue →  10 rows
-     89.5 ms  Revenue by product category →  10 rows
-     11.2 ms  Unpaid invoices total        →  3521849.47
-      6.8 ms  Average order value          →  249.33
+---
 
-── Bulk UPDATE ───────────────────────────────────────────────────────────
-    198.4 ms  Update 'pending' → 'confirmed'
+## Troubleshooting
 
-── Engine latency (μs) ───────────────────────────────────────────────────
-  insert     count=75,000  p50=4,096μ  p99=32,768μ
-  select     count=8       p50=128μ    p99=2,048μ
-  update     count=1       p50=32,768μ p99=32,768μ
-```
+| Symptom | Fix |
+|---------|-----|
+| Studio shows "Not configured" | Check `.env.local`: `VITE_UNIDB_URL=http://localhost:8080` and `VITE_UNIDB_TOKEN=<token>` |
+| Engine not starting | `tail /tmp/unidb.log` — port 8080 in use? Run Step 1 again |
+| Schema tab shows no tables | Run `python3 demo/setup_schema.py` |
+| Records tab shows no rows | Run `python3 demo/seed.py --size 50k` |
+| `doc_embeddings` not found | Run `python3 demo/embed_search.py` |
+| vec_distance COLUMN_NOT_FOUND | Remove `vec_distance` from WHERE — use it in SELECT only |
+| Compare tab empty | Run `python3 demo/compare.py --size 10k` |
+| Docker Hub TLS timeout | Use standalone Postgres: `docker run -d --name pg-demo -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo -e POSTGRES_DB=demo -p 5432:5432 postgres:16-alpine` |
+| Events tab shows nothing | Select table `orders`, click Enable, then Start — then run the script or SQL |
 
 ---
 
 ## Quick reference
 
+**Seed sizes**
+
+| Flag | Approx rows | Time |
+|------|------------|------|
+| `--size 10k` | ~15k | ~1s |
+| `--size 50k` | ~75k | ~4s |
+| `--size 200k` | ~300k | ~19s |
+| `--size 1M` | ~1.5M | ~1.5 min |
+| `--size 5M` | ~4M | ~4 min |
+
+**Scripts** (run from `unidb-studio` root)
+
 | Script | Purpose |
 |--------|---------|
 | `setup_schema.py` | Drop + recreate 6 tables with FK constraints |
-| `seed.py --size N` | Bulk seed (10k / 50k / 200k / 1M) |
-| `benchmark.py` | Run 8 representative queries + print engine stats |
-| `compare.py --size N` | Seed + benchmark unidb AND Postgres; write `public/benchmark-results.json` |
-| `events_demo.py` | Enable CDC, insert/update/delete, stream events to terminal |
-| `vector_demo.py` | Create VECTOR table, HNSW index, run NEAR() queries |
-| `embed_search.py` | Upload docs to MinIO, embed, NEAR() search + presigned download |
+| `seed.py --size N` | Bulk-insert e-commerce data |
+| `benchmark.py` | 8 representative queries + engine latency stats |
+| `compare.py --size N` | Benchmark unidb AND Postgres; write Compare tab data |
+| `events_demo.py` | Enable CDC on `orders`, fire INSERT / UPDATE / DELETE |
+| `vector_demo.py` | VECTOR table + HNSW index + NEAR() product search |
+| `embed_search.py` | Upload 6 docs to MinIO, embed, semantic NEAR() search |
 
-| Studio tab | Primary use |
-|------------|-------------|
-| SQL editor | Live queries, DDL, bulk UPDATE |
-| Records | Browse table rows with pagination |
-| Schema | FK relationship graph |
-| Events | Real-time CDC event stream |
-| Observability | Engine metrics (WAL, commits, buffer pool) |
+**Studio tabs at a glance**
+
+| Tab | What to show |
+|-----|-------------|
+| Schema | FK relationship graph — always live from the engine catalog |
+| Records | Browse + paginate any table; click a row for full detail |
+| SQL editor | Live queries; Embed button converts text → NEAR() vector |
+| Observability → Overview | WAL, commits/sec, cache hit rate, active transactions |
+| Observability → Query Performance | p50/p99 per query kind + browser query history |
+| Events | Real-time CDC stream — INSERT/UPDATE/DELETE in < 5 ms |
+| Storage | MinIO bucket browser, file upload, presigned download |
+| Compare | unidb vs Postgres bar chart |
 | Logs | Structured request logs with correlation IDs |
-| Query Performance | Per-kind engine latency + browser query history |
-| Compare | unidb vs Postgres bar charts |
-| Storage | MinIO bucket/object browser + upload |
