@@ -26,6 +26,11 @@ import { SchemaVisualizer } from '@/components/SchemaVisualizer';
 import { CsvUpload } from '@/components/CsvUpload';
 import { TableBuilder } from '@/components/TableBuilder';
 import { TableActions } from '@/components/TableActions';
+import { StoragePanel } from '@/components/StoragePanel';
+import { EventsPanel } from '@/components/EventsPanel';
+import { ObservabilityPanel } from '@/components/ObservabilityPanel';
+import { LogsPanel } from '@/components/LogsPanel';
+import { ComparePanel } from '@/components/ComparePanel';
 import { Overview } from '@/screens/Overview';
 import { cn } from '@/lib/utils';
 
@@ -258,7 +263,7 @@ export default function App() {
                 <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
               </div>
             )}
-            <section className={cn('flex flex-1 flex-col', tab === 'overview' ? 'overflow-hidden' : 'overflow-auto p-4')}>
+            <section className={cn('flex flex-1 flex-col', tab === 'overview' || tab === 'storage' ? 'overflow-hidden' : 'overflow-auto p-4')}>
               {tab === 'overview' ? (
                 <Overview
                   tables={catalog.tables}
@@ -290,9 +295,17 @@ export default function App() {
                 <SchemaVisualizer tables={catalog.tables} />
               ) : tab === 'csv' ? (
                 <CsvUpload tables={catalog.tables} />
-              ) : (
-                <EmptyState message={`"${tab}" screen — built in a later phase.`} />
-              )}
+              ) : tab === 'storage' ? (
+                <StoragePanel />
+              ) : tab === 'events' ? (
+                <EventsPanel tables={catalog.tables} />
+              ) : tab === 'observability' ? (
+                <ObservabilityPanel />
+              ) : tab === 'logs' ? (
+                <LogsPanel />
+              ) : tab === 'compare' ? (
+                <ComparePanel />
+              ) : null}
             </section>
           </main>
         </div>
