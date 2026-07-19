@@ -13,11 +13,14 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { BASE_URL, IS_CONFIGURED } from '@/lib/engine/api.js';
+import { BASE_URL, IS_CONFIGURED, runSql } from '@/lib/engine/api.js';
+import { quoteIdent } from '@/lib/engine/format.js';
 import { useTheme } from '@/lib/theme.tsx';
-import { useCatalog } from '@/hooks/useCatalog';
+import { useCatalog, type CatalogTable, type CatalogError } from '@/hooks/useCatalog';
 import { TokenStatus } from '@/components/TokenStatus';
 import { EmptyState } from '@/components/EmptyState';
+import { TablesSidebar } from '@/components/TablesSidebar';
+import { DataGrid, type DataGridResult } from '@/components/DataGrid';
 import { cn } from '@/lib/utils';
 
 type Tab =
@@ -96,6 +99,37 @@ export default function App() {
       : catalog.tablesError
         ? 'offline'
         : 'connected';
+
+  function selectTable(t: CatalogTable) {
+    catalog.setSelectedTable(t);
+    setTab('records');
+  }
+
+  // Temporary Phase 2 proof that DataGrid renders arbitrary POST /sql
+  // payloads — replaced by the full paginated record browser in Phase 3.
+  const [preview, setPreview] = useState<{ result: DataGridResult | null; error: CatalogError | null; loading: boolean }>({
+    result: null,
+    error: null,
+    loading: false,
+  });
+  useEffect(() => {
+    if (tab !== 'records' || !catalog.selectedTable) return;
+    let cancelled = false;
+    setPreview({ result: null, error: null, loading: true });
+    runSql(`SELECT * FROM ${quoteIdent(catalog.selectedTable.name)} LIMIT 50`)
+      .then((out: { results: DataGridResult[] }) => {
+        if (cancelled) return;
+        const r = out.results.find((x) => x.type === 'rows') ?? { type: 'rows', rows: [] };
+        setPreview({ result: r, error: null, loading: false });
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        setPreview({ result: null, error: { code: e?.code, message: e?.message ?? String(e), status: e?.status }, loading: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, catalog.selectedTable]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -177,12 +211,21 @@ export default function App() {
           <NavGroup label="Monitor" items={MONITOR_ITEMS} tab={tab} setTab={setTab} />
         </nav>
 
-        {/* Body: optional tables sidebar (Phase 2) + content */}
+        {/* Body: tables sidebar (data tabs only) + content */}
         <div className="flex min-w-0 flex-1 overflow-hidden">
           {DATA_TABS.has(tab) && (
-            <aside className="flex w-64 shrink-0 items-center justify-center border-r border-border bg-surface">
-              <span className="text-sm text-text-muted">Tables sidebar — Phase 2</span>
-            </aside>
+            <TablesSidebar
+              tables={catalog.tables}
+              loading={catalog.tablesLoading}
+              error={catalog.tablesError}
+              supported={catalog.tablesSupported}
+              selected={catalog.selectedTable?.name}
+              canDDL={catalog.canDDL}
+              onSelect={selectTable}
+              onRefresh={catalog.loadTables}
+              onNewTable={() => {}}
+              onManageTable={() => {}}
+            />
           )}
 
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -193,7 +236,21 @@ export default function App() {
               </div>
             )}
             <section className="flex flex-1 flex-col overflow-auto p-4">
-              <EmptyState message={`"${tab}" screen — built in a later phase.`} />
+              {tab === 'records' ? (
+                catalog.selectedTable ? (
+                  preview.error ? (
+                    <EmptyState message={`${preview.error.code}: ${preview.error.message}`} />
+                  ) : preview.loading && !preview.result ? (
+                    <p className="text-sm text-text-light">Loading…</p>
+                  ) : (
+                    <DataGrid result={preview.result} />
+                  )
+                ) : (
+                  <EmptyState message="Pick a table from the sidebar." />
+                )
+              ) : (
+                <EmptyState message={`"${tab}" screen — built in a later phase.`} />
+              )}
             </section>
           </main>
         </div>
