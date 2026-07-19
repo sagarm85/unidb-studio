@@ -64,7 +64,7 @@ until curl -sf http://localhost:8080/metrics > /dev/null; do sleep 1; done && ec
 ```bash
 # From unidb-studio root
 docker compose -f demo/docker-compose.demo.yml up -d --build
-until curl -sf http://localhost:8080/stats > /dev/null; do sleep 2; done && echo "Engine ready"
+until curl -sf http://localhost:8080/metrics > /dev/null; do sleep 2; done && echo "Engine ready"
 ```
 
 ---
