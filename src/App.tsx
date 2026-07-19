@@ -26,6 +26,7 @@ import { SchemaVisualizer } from '@/components/SchemaVisualizer';
 import { CsvUpload } from '@/components/CsvUpload';
 import { TableBuilder } from '@/components/TableBuilder';
 import { TableActions } from '@/components/TableActions';
+import { Overview } from '@/screens/Overview';
 import { cn } from '@/lib/utils';
 
 type Tab =
@@ -257,8 +258,16 @@ export default function App() {
                 <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
               </div>
             )}
-            <section className="flex flex-1 flex-col overflow-auto p-4">
-              {tab === 'sql' ? (
+            <section className={cn('flex flex-1 flex-col', tab === 'overview' ? 'overflow-hidden' : 'overflow-auto p-4')}>
+              {tab === 'overview' ? (
+                <Overview
+                  tables={catalog.tables}
+                  tablesLoading={catalog.tablesLoading}
+                  tablesError={catalog.tablesError}
+                  catalogSource={catalog.catalogSource}
+                  onGoTab={setTab}
+                />
+              ) : tab === 'sql' ? (
                 <SqlEditor sql={sql} onSqlChange={setSql} paramsText={paramsText} onParamsTextChange={setParamsText} />
               ) : tab === 'records' ? (
                 catalog.selectedTable ? (
