@@ -4,9 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>unidb studio</title>
+    <script>
+      // Applied before first paint to avoid a flash of the wrong theme.
+      // In-memory + URL param only — no localStorage (see ThemeProvider).
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var theme = params.get('theme') === 'light' ? 'light' : 'dark';
+        var accent = params.get('accent') === 'claude' ? 'claude' : 'default';
+        var root = document.documentElement;
+        root.classList.add(theme === 'light' ? 'theme-light' : 'theme-dark');
+        if (accent === 'claude') root.classList.add('accent-claude');
+      })();
+    </script>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
