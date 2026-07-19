@@ -11,7 +11,9 @@ export interface CatalogColumn {
   name: string;
   type?: string;
   nullable?: boolean;
-  index?: string;
+  // A secondary btree index is a plain `true`; a durable ANN index reports
+  // its kind as a string (currently only `'hnsw'`) — see schema.js's DEMO_SCHEMA.
+  index?: string | boolean;
   default?: unknown;
 }
 

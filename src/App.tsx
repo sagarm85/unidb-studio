@@ -16,11 +16,16 @@ import {
 import { BASE_URL, IS_CONFIGURED, runSql } from '@/lib/engine/api.js';
 import { quoteIdent } from '@/lib/engine/format.js';
 import { useTheme } from '@/lib/theme.tsx';
-import { useCatalog, type CatalogTable, type CatalogError } from '@/hooks/useCatalog';
+import { useCatalog, type CatalogTable } from '@/hooks/useCatalog';
 import { TokenStatus } from '@/components/TokenStatus';
 import { EmptyState } from '@/components/EmptyState';
 import { TablesSidebar } from '@/components/TablesSidebar';
-import { DataGrid, type DataGridResult } from '@/components/DataGrid';
+import { SqlEditor } from '@/components/SqlEditor';
+import { RecordBrowser } from '@/components/RecordBrowser';
+import { SchemaVisualizer } from '@/components/SchemaVisualizer';
+import { CsvUpload } from '@/components/CsvUpload';
+import { TableBuilder } from '@/components/TableBuilder';
+import { TableActions } from '@/components/TableActions';
 import { cn } from '@/lib/utils';
 
 type Tab =
@@ -105,31 +110,48 @@ export default function App() {
     setTab('records');
   }
 
-  // Temporary Phase 2 proof that DataGrid renders arbitrary POST /sql
-  // payloads — replaced by the full paginated record browser in Phase 3.
-  const [preview, setPreview] = useState<{ result: DataGridResult | null; error: CatalogError | null; loading: boolean }>({
-    result: null,
-    error: null,
-    loading: false,
-  });
+  // ---- SQL editor state (lifted so RecordBrowser's "Open in SQL editor"
+  // handoff and DDL modals can push a query / refresh from here). ----
+  const [sql, setSql] = useState('SELECT 1;');
+  const [paramsText, setParamsText] = useState('');
+
+  function queryTableInEditor() {
+    if (!catalog.selectedTable) return;
+    setSql(`SELECT * FROM ${quoteIdent(catalog.selectedTable.name)} LIMIT 50;`);
+    setParamsText('');
+    setTab('sql');
+  }
+
+  // ---- DDL (schema management) ---------------------------------------------
+  const [newTableOpen, setNewTableOpen] = useState(false);
+  const [actionsTarget, setActionsTarget] = useState<CatalogTable | null>(null);
+
+  // Run a DDL statement, then refresh the catalog and re-point any open target.
+  async function runDDL(ddlSql: string) {
+    await runSql(ddlSql);
+    await catalog.loadTables();
+  }
+  async function onNewTableSubmit(sqlText: string) {
+    await runDDL(sqlText);
+    setNewTableOpen(false);
+  }
+  function onTableDropped() {
+    const dropped = actionsTarget?.name;
+    setActionsTarget(null);
+    if (catalog.selectedTable?.name === dropped) {
+      catalog.setSelectedTable(null);
+      if (tab === 'records') setTab('sql');
+    }
+  }
+  // Re-point the open "manage table" target at the refreshed table object
+  // after the catalog reloads (DDL success), so it shows fresh columns.
   useEffect(() => {
-    if (tab !== 'records' || !catalog.selectedTable) return;
-    let cancelled = false;
-    setPreview({ result: null, error: null, loading: true });
-    runSql(`SELECT * FROM ${quoteIdent(catalog.selectedTable.name)} LIMIT 50`)
-      .then((out: { results: DataGridResult[] }) => {
-        if (cancelled) return;
-        const r = out.results.find((x) => x.type === 'rows') ?? { type: 'rows', rows: [] };
-        setPreview({ result: r, error: null, loading: false });
-      })
-      .catch((e: any) => {
-        if (cancelled) return;
-        setPreview({ result: null, error: { code: e?.code, message: e?.message ?? String(e), status: e?.status }, loading: false });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, catalog.selectedTable]);
+    if (!actionsTarget) return;
+    const fresh = catalog.tables.find((t) => t.name === actionsTarget.name);
+    if (fresh && fresh !== actionsTarget) setActionsTarget(fresh);
+    else if (!fresh) setActionsTarget(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog.tables]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -223,8 +245,8 @@ export default function App() {
               canDDL={catalog.canDDL}
               onSelect={selectTable}
               onRefresh={catalog.loadTables}
-              onNewTable={() => {}}
-              onManageTable={() => {}}
+              onNewTable={() => setNewTableOpen(true)}
+              onManageTable={(t) => setActionsTarget(t)}
             />
           )}
 
@@ -236,18 +258,29 @@ export default function App() {
               </div>
             )}
             <section className="flex flex-1 flex-col overflow-auto p-4">
-              {tab === 'records' ? (
+              {tab === 'sql' ? (
+                <SqlEditor sql={sql} onSqlChange={setSql} paramsText={paramsText} onParamsTextChange={setParamsText} />
+              ) : tab === 'records' ? (
                 catalog.selectedTable ? (
-                  preview.error ? (
-                    <EmptyState message={`${preview.error.code}: ${preview.error.message}`} />
-                  ) : preview.loading && !preview.result ? (
-                    <p className="text-sm text-text-light">Loading…</p>
-                  ) : (
-                    <DataGrid result={preview.result} />
-                  )
+                  <>
+                    <div className="mb-2.5">
+                      <button className="text-sm text-brand hover:underline" onClick={queryTableInEditor}>
+                        Open in SQL editor →
+                      </button>
+                    </div>
+                    <RecordBrowser
+                      table={catalog.selectedTable}
+                      relationships={catalog.relationships}
+                      editable={catalog.catalogSource === 'catalog'}
+                    />
+                  </>
                 ) : (
                   <EmptyState message="Pick a table from the sidebar." />
                 )
+              ) : tab === 'schema' ? (
+                <SchemaVisualizer tables={catalog.tables} />
+              ) : tab === 'csv' ? (
+                <CsvUpload tables={catalog.tables} />
               ) : (
                 <EmptyState message={`"${tab}" screen — built in a later phase.`} />
               )}
@@ -255,6 +288,11 @@ export default function App() {
           </main>
         </div>
       </div>
+
+      {newTableOpen && <TableBuilder onSubmit={onNewTableSubmit} onClose={() => setNewTableOpen(false)} />}
+      {actionsTarget && (
+        <TableActions table={actionsTarget} onRun={runDDL} onClose={() => setActionsTarget(null)} onDropped={onTableDropped} />
+      )}
     </div>
   );
 }
