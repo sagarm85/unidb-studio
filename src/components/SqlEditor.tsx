@@ -15,8 +15,19 @@ import {
 import { embed, vectorToSql } from '@/lib/engine/embed.js';
 import { DataGrid, type DataGridResult } from './DataGrid';
 import { ErrorBox } from './ErrorBox';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import type { CatalogError } from '@/hooks/useCatalog';
 import { cn } from '@/lib/utils';
+
+// Heuristic, not a real parser (matches the same pragmatic style as
+// isSingleSelect in api.js) — good enough to catch the common "SELECT * FROM
+// big_table" case with no LIMIT, where Run would fetch the entire result set
+// in one response and could hang the tab. Stream (server-side cursor paging)
+// is the existing mitigation for that; this just surfaces the choice instead
+// of silently fetching everything.
+function looksUnbounded(sqlText: string) {
+  return isSingleSelect(sqlText) && !/\blimit\s+\d+/i.test(sqlText);
+}
 
 interface Session {
   txnId: number | string;
@@ -285,6 +296,16 @@ export function SqlEditor({
     }
   }
 
+  const [confirmRunOpen, setConfirmRunOpen] = useState(false);
+
+  function handleRunClick() {
+    if (looksUnbounded(sql)) {
+      setConfirmRunOpen(true);
+      return;
+    }
+    run();
+  }
+
   async function run() {
     setLoading(true);
     setError(null);
@@ -352,7 +373,7 @@ export function SqlEditor({
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (!loading) run();
+      if (!loading) handleRunClick();
       return;
     }
     if (e.key === 'Tab') {
@@ -652,7 +673,7 @@ export function SqlEditor({
       <div className="flex items-center gap-3">
         <button
           className="h-8 rounded-md bg-brand px-3 text-md font-medium text-brand-text-on hover:bg-brand-hover disabled:opacity-45"
-          onClick={run}
+          onClick={handleRunClick}
           disabled={loading}
         >
           {loading ? 'Running…' : 'Run'}
@@ -748,6 +769,47 @@ export function SqlEditor({
             <DataGrid result={result} />
           </div>
         ))}
+
+      <Dialog open={confirmRunOpen} onOpenChange={setConfirmRunOpen}>
+        <DialogContent className="max-w-[440px] p-0">
+          <DialogHeader className="border-b border-border px-4 py-3">
+            <DialogTitle>No LIMIT on this query</DialogTitle>
+          </DialogHeader>
+          <div className="p-4">
+            <p className="m-0 text-md leading-relaxed">
+              This looks like an unbounded <code className="rounded-sm border border-border bg-secondary px-1 font-mono text-sm">SELECT</code> — Run fetches the
+              entire result set in one response, which can hang the tab on a large table. <b>Stream</b> pages it server-side via a
+              cursor instead.
+            </p>
+          </div>
+          <DialogFooter className="border-t border-border px-4 py-3">
+            <button
+              className="mr-auto h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong"
+              onClick={() => setConfirmRunOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong"
+              onClick={() => {
+                setConfirmRunOpen(false);
+                run();
+              }}
+            >
+              Run anyway
+            </button>
+            <button
+              className="h-8 rounded-md bg-brand px-3 text-md font-medium text-brand-text-on hover:bg-brand-hover"
+              onClick={() => {
+                setConfirmRunOpen(false);
+                startStream();
+              }}
+            >
+              Use Stream instead
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
