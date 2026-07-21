@@ -189,6 +189,98 @@ export async function cursorClose(cursorId) {
   }
 }
 
+/**
+ * POST /auth/preview (item-24 Z6). Runs `sql` as `asRole`, RLS-filtered —
+ * the Auth tab's "preview as user" debugger. Superuser-gated by the server;
+ * a non-superuser caller gets 403 PERMISSION_DENIED (surfaced as ApiError).
+ *
+ * @param {string} asRole
+ * @param {string} sql
+ * @returns {Promise<{type: string, columns: string[], rows: unknown[][]}>}
+ */
+export async function authPreview(asRole, sql) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/preview`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ as_role: asRole, sql }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * GET /auth/meta (item 100). No JWT required — the blank-slate discovery
+ * route: whether the server is in open mode, the grantable privilege/policy
+ * vocabularies, every queryable catalog relation, and whether
+ * `POST /auth/login` is available on this server.
+ *
+ * @returns {Promise<{open_mode: boolean, privilege_types: string[], policy_operations: string[], catalog_tables: string[], dev_login_enabled: boolean}>}
+ */
+export async function fetchAuthMeta() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/meta`);
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * POST /auth/login (item 100). No JWT required — but only works when the
+ * server was started with UNIDB_DEV_LOGIN=1 (check `dev_login_enabled` from
+ * fetchAuthMeta() first). Passwordless: identifies an existing user by name
+ * and issues a 1h JWT for them. Dev/demo only, never a production auth path.
+ * Both "user not found" and "dev login disabled" come back as a normal
+ * ApiError (400 SQL_PLAN_ERROR) — there's no special status code to branch
+ * on, so callers should just surface `.message`.
+ *
+ * @param {string} username
+ * @returns {Promise<{token: string, expires_in: number}>}
+ */
+export async function devLogin(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * GET /auth/whoami (item 100). JWT required. The caller's own identity +
+ * authorization summary — `user` is the JWT `sub` (null for the implicit
+ * no-sub superuser), plus is_superuser/roles/privileges/open_mode.
+ *
+ * @returns {Promise<{user: string|null, is_superuser: boolean, roles: string[], privileges: {table: string, ops: string[]}[], open_mode: boolean}>}
+ */
+export async function fetchWhoami() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/whoami`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
 // ---- transaction sessions (R1) -----------------------------------------
 async function txnPost(path, body) {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));

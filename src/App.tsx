@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { toast } from 'sonner';
 import {
   LayoutDashboard,
   Table2,
@@ -12,6 +13,8 @@ import {
   GitCompare,
   Sun,
   Moon,
+  Palette,
+  Shield,
 } from 'lucide-react';
 import { BASE_URL, IS_CONFIGURED, runSql } from '@/lib/engine/api.js';
 import { quoteIdent } from '@/lib/engine/format.js';
@@ -31,7 +34,9 @@ import { EventsPanel } from '@/components/EventsPanel';
 import { ObservabilityPanel } from '@/components/ObservabilityPanel';
 import { LogsPanel } from '@/components/LogsPanel';
 import { ComparePanel } from '@/components/ComparePanel';
+import { AuthPanel } from '@/components/AuthPanel';
 import { Overview } from '@/screens/Overview';
+import { Toaster } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
 
 type Tab =
@@ -42,6 +47,7 @@ type Tab =
   | 'csv'
   | 'storage'
   | 'events'
+  | 'auth'
   | 'observability'
   | 'logs'
   | 'compare';
@@ -54,6 +60,7 @@ const VALID_TABS = new Set<Tab>([
   'csv',
   'storage',
   'events',
+  'auth',
   'observability',
   'logs',
   'compare',
@@ -77,6 +84,7 @@ const DATABASE_ITEMS: NavItem[] = [
 const PLATFORM_ITEMS: NavItem[] = [
   { tab: 'storage', label: 'Storage', icon: HardDrive },
   { tab: 'events', label: 'Events', icon: Zap },
+  { tab: 'auth', label: 'Auth', icon: Shield },
 ];
 
 const MONITOR_ITEMS: NavItem[] = [
@@ -92,7 +100,7 @@ function initialTab(): Tab {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
-  const { theme, toggleTheme } = useTheme();
+  const { theme, toggleTheme, accent, setAccent } = useTheme();
   const catalog = useCatalog();
 
   // Keep `?tab=` in sync so a reload/share lands on the same screen —
@@ -132,10 +140,24 @@ export default function App() {
   const [newTableOpen, setNewTableOpen] = useState(false);
   const [actionsTarget, setActionsTarget] = useState<CatalogTable | null>(null);
 
+  // Heuristic label for the DDL success toast — every DDL success in the app
+  // (new table, add/drop column, create index, drop table) funnels through
+  // runDDL below, so this is the one place to surface it.
+  function ddlSuccessLabel(sql: string): string {
+    const s = sql.trim().toUpperCase();
+    if (s.startsWith('CREATE TABLE')) return 'Table created';
+    if (s.startsWith('DROP TABLE')) return 'Table dropped';
+    if (/^ALTER TABLE .* ADD COLUMN/.test(s)) return 'Column added';
+    if (/^ALTER TABLE .* DROP COLUMN/.test(s)) return 'Column dropped';
+    if (s.startsWith('CREATE INDEX')) return 'Index created';
+    return 'Done';
+  }
+
   // Run a DDL statement, then refresh the catalog and re-point any open target.
   async function runDDL(ddlSql: string) {
     await runSql(ddlSql);
     await catalog.loadTables();
+    toast.success(ddlSuccessLabel(ddlSql));
   }
   async function onNewTableSubmit(sqlText: string) {
     await runDDL(sqlText);
@@ -206,6 +228,17 @@ export default function App() {
             </>
           )}
           <button
+            className={cn(
+              'flex size-7 items-center justify-center rounded-md text-text-light hover:bg-accent hover:text-foreground',
+              accent === 'claude' && 'text-brand',
+            )}
+            onClick={() => setAccent(accent === 'claude' ? 'default' : 'claude')}
+            title={accent === 'claude' ? 'Switch to default accent' : 'Switch to Claude accent'}
+            aria-label="Toggle accent color"
+          >
+            <Palette className="size-4" />
+          </button>
+          <button
             className="flex size-7 items-center justify-center rounded-md text-text-light hover:bg-accent hover:text-foreground"
             onClick={toggleTheme}
             title="Toggle theme"
@@ -218,7 +251,7 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1">
         {/* Left nav */}
-        <nav className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface p-2">
+        <nav className="flex w-14 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface p-2 lg:w-56">
           <NavButton
             active={tab === 'overview'}
             icon={<LayoutDashboard className="size-4" />}
@@ -299,6 +332,8 @@ export default function App() {
                 <StoragePanel />
               ) : tab === 'events' ? (
                 <EventsPanel tables={catalog.tables} />
+              ) : tab === 'auth' ? (
+                <AuthPanel tables={catalog.tables} />
               ) : tab === 'observability' ? (
                 <ObservabilityPanel />
               ) : tab === 'logs' ? (
@@ -315,6 +350,7 @@ export default function App() {
       {actionsTarget && (
         <TableActions table={actionsTarget} onRun={runDDL} onClose={() => setActionsTarget(null)} onDropped={onTableDropped} />
       )}
+      <Toaster />
     </div>
   );
 }
@@ -332,7 +368,7 @@ function NavGroup({
 }) {
   return (
     <div className="flex flex-col gap-px">
-      <span className="px-3 pt-4 pb-1 text-xs font-semibold tracking-wide text-text-muted uppercase">{label}</span>
+      <span className="hidden px-3 pt-4 pb-1 text-xs font-semibold tracking-wide text-text-muted uppercase lg:block">{label}</span>
       {items.map((item) => (
         <NavButton
           key={item.tab}
@@ -350,7 +386,7 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
   return (
     <button
       className={cn(
-        'mx-2 my-px flex h-8 items-center gap-2 rounded-md px-3 text-md text-text-light transition-colors',
+        'mx-2 my-px flex h-8 items-center justify-center gap-2 rounded-md px-3 text-md text-text-light transition-colors lg:justify-start',
         active ? 'bg-selected text-foreground [&_svg]:text-brand' : 'hover:bg-accent hover:text-foreground',
       )}
       style={{ width: 'calc(100% - 1rem)' }}
@@ -358,7 +394,7 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
       title={label}
     >
       {icon}
-      {label}
+      <span className="hidden lg:inline">{label}</span>
     </button>
   );
 }
