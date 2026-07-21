@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getTables, getSchema, runSql } from '@/lib/engine/api.js';
 
-// Line-for-line port of the catalog-loading state machine in
-// src-v1/App.svelte's `loadTables` — same catalog → flat `/tables`
-// fallback, internal-table filter, and selection re-pointing after a
-// reload/DDL/edit. Owns `selectedTable` too, since re-pointing it at the
-// refreshed table object is intrinsic to a catalog reload.
+// Catalog-loading state machine: catalog → flat `/tables` fallback,
+// internal-table filter, and selection re-pointing after a reload/DDL/edit.
+// Owns `selectedTable` too, since re-pointing it at the refreshed table
+// object is intrinsic to a catalog reload.
 
 export interface CatalogColumn {
   name: string;

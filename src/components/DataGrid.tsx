@@ -3,9 +3,8 @@ import { formatCell, fullCellText, isNull } from '@/lib/engine/format.js';
 import { rowsToCsv, downloadText } from '@/lib/engine/csv.js';
 import { cn } from '@/lib/utils';
 
-// Shared grid for both the SQL editor's results and the record browser —
-// ported line-for-line from src-v1/lib/ResultsGrid.svelte. `columns` is an
-// optional fallback for servers that predate the /sql column enrichment;
+// Shared grid for both the SQL editor's results and the record browser.
+// `columns` is an optional fallback for servers that predate the /sql column enrichment;
 // `columnTypes` (parallel to the resolved headers) lets a caller that knows
 // the schema (the record browser) render vectors compactly and show the type
 // in the header. `onRowAction` adds a leading per-row button (record browser's

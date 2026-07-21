@@ -1,12 +1,11 @@
 import { openEventStream } from './engine/api.js';
 
-// Framework-agnostic port of src-v1/lib/eventStore.js. Deliberately module-
-// level (not component state): the live-tail stream must keep running and
-// its state must survive switching away from the Events tab and back (the
-// UI hint literally says "persists across tab switches and page reloads"),
-// which a React component's local state cannot do once unmounted. A
-// useSyncExternalStore-based hook (useEventStream) is how components read
-// this without a state library.
+// Deliberately module-level (not component state): the live-tail stream must
+// keep running and its state must survive switching away from the Events tab
+// and back (the UI hint literally says "persists across tab switches and
+// page reloads"), which a React component's local state cannot do once
+// unmounted. A useSyncExternalStore-based hook (useEventStream) is how
+// components read this without a state library.
 
 const MAX_ROWS = 500;
 const LS_KEY = 'unidb_event_stream';

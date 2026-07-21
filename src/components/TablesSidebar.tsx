@@ -8,9 +8,9 @@ import { cn } from '@/lib/utils';
 
 // Per DESIGN_SPEC §3.4. Presentational — App owns the catalog fetch (useCatalog)
 // and passes state in. DDL callbacks (New table / Manage) only render when
-// `canDDL` (a live catalog). Ported search behavior from src-v1/lib/TablesSidebar.svelte:
-// name matches win; only when NO table name matches do we fall back to column-name
-// matches (so "email" still finds the table that has that column).
+// `canDDL` (a live catalog). Search: name matches win; only when NO table name
+// matches do we fall back to column-name matches (so "email" still finds the
+// table that has that column).
 export function TablesSidebar({
   tables,
   loading,

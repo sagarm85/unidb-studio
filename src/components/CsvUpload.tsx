@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { Upload } from 'lucide-react';
 import { runSql } from '@/lib/engine/api.js';
 import { parseCsv } from '@/lib/engine/csv.js';
@@ -91,7 +92,9 @@ export function CsvUpload({ tables = [] }: { tables?: CatalogTable[] }) {
         setProgress(Math.min(i + size, rows.length));
       }
       const wallMs = performance.now() - start;
-      setDone({ inserted, wallMs, rowsPerSec: wallMs > 0 ? (inserted / wallMs) * 1000 : 0 });
+      const rowsPerSec = wallMs > 0 ? (inserted / wallMs) * 1000 : 0;
+      setDone({ inserted, wallMs, rowsPerSec });
+      toast.success(`Imported ${inserted.toLocaleString()} rows into "${targetTable}" (${rowsPerSec.toFixed(0)} rows/sec)`);
     } catch (e: any) {
       setError({
         code: e?.code,

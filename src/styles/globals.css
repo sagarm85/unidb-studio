@@ -75,4 +75,30 @@
     @apply bg-background text-foreground;
     font-size: var(--text-md);
   }
+
+  /* Baseline keyboard-focus ring for the many hand-rolled interactive
+     elements that don't declare their own focus-visible utility. Components
+     with an explicit focus-visible:ring-* class (shadcn primitives, form
+     inputs) layer their own box-shadow ring on top of this outline. */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

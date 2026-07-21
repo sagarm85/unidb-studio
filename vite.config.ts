@@ -32,6 +32,55 @@ function tokenExp(token: string) {
   }
 }
 
+function readEnvVar(lines: string[], key: string): string {
+  const line = lines.find((l) => l.startsWith(`${key}=`))
+  return line ? line.slice(key.length + 1).trim() : ''
+}
+
+// Bootstrap-safety net: every Studio-minted token carries `sub: "dev"`. If
+// "dev" isn't a registered superuser, the FIRST auth DDL anyone runs against
+// this server (Auth tab, SQL editor, a script) flips it out of open/
+// bootstrap mode and permanently locks every future dev-token request out of
+// every superuser-gated route (GRANT, CREATE POLICY, the auth catalog reads)
+// — with no recovery path from inside the app itself (confirmed the hard way
+// against a live server: had to hand-mint a no-`sub` implicit-superuser JWT
+// out of band to unstick it). Run once per `npm run dev` process, fire-and-
+// forget, before the first /__token response, so the Studio's own dev token
+// can never lock itself out.
+let bootstrapAttempted = false
+async function bootstrapDevSuperuser(baseUrl: string, token: string) {
+  if (bootstrapAttempted || !baseUrl) return
+  bootstrapAttempted = true
+  try {
+    const res = await fetch(`${baseUrl}/sql`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: 'CREATE USER dev SUPERUSER' }),
+    })
+    if (res.ok) {
+      console.log('[unidb-dev-token] bootstrapped "dev" as superuser')
+      return
+    }
+    const body = (await res.json().catch(() => null)) as { error?: string; code?: string } | null
+    if (body?.code === 'AUTHZ_ERROR' && /already exists/i.test(body?.error ?? '')) {
+      return // already bootstrapped (by us on a prior run, or manually) — fine
+    }
+    if (body?.code === 'PERMISSION_DENIED') {
+      console.warn(
+        '[unidb-dev-token] could not bootstrap "dev" as superuser (permission denied) — ' +
+          'another user/role was likely created first, exiting open mode. Auth-tab / GRANT / ' +
+          'CREATE POLICY calls from this dev token will 403 until "dev" is manually granted ' +
+          'SUPERUSER by an existing superuser token.',
+      )
+      return
+    }
+    console.warn(`[unidb-dev-token] bootstrap check failed: ${body?.error ?? res.statusText}`)
+  } catch {
+    // Server unreachable (e.g. unidb-server not started yet) — silent; the
+    // rest of the Studio already surfaces connectivity errors on its own.
+  }
+}
+
 // Dev-only `GET /__token`. If the token already in .env.local is still active
 // it is returned as-is (it's already the env value); otherwise a fresh dev JWT
 // is minted with UNIDB_JWT_SECRET (default `dev-secret`, matching the README
@@ -63,6 +112,8 @@ function devTokenPlugin(): Plugin {
           else lines.push(line)
           writeFileSync(envPath, lines.join('\n'))
         }
+
+        bootstrapDevSuperuser(readEnvVar(lines, 'VITE_UNIDB_URL'), out.token)
 
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify(out))

@@ -5,9 +5,9 @@ export interface MetricPoint {
   v: number | null;
 }
 
-// Hand-rolled SVG line chart — ported from src-v1/lib/MetricChart.svelte.
-// No chart library per DESIGN_SPEC §8. Empty state ("Collecting data…") is
-// honest — never seeded with sample numbers (see /CLAUDE.md).
+// Hand-rolled SVG line chart. No chart library per DESIGN_SPEC §8. Empty
+// state ("Collecting data…") is honest — never seeded with sample numbers
+// (see /CLAUDE.md).
 const VW = 420;
 const VH = 160;
 const ML = 54;

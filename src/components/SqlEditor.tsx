@@ -12,31 +12,34 @@ import {
   cursorPage,
   cursorClose,
 } from '@/lib/engine/api.js';
+import { recordQuery } from '@/lib/engine/queryStore.js';
 import { embed, vectorToSql } from '@/lib/engine/embed.js';
 import { DataGrid, type DataGridResult } from './DataGrid';
 import { ErrorBox } from './ErrorBox';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import type { CatalogError } from '@/hooks/useCatalog';
 import { cn } from '@/lib/utils';
 
-// Heuristic, not a real parser (matches the same pragmatic style as
-// isSingleSelect in api.js) — good enough to catch the common "SELECT * FROM
-// big_table" case with no LIMIT, where Run would fetch the entire result set
-// in one response and could hang the tab. Stream (server-side cursor paging)
-// is the existing mitigation for that; this just surfaces the choice instead
-// of silently fetching everything.
-function looksUnbounded(sqlText: string) {
-  return isSingleSelect(sqlText) && !/\blimit\s+\d+/i.test(sqlText);
-}
+// Single-SELECT statements always page server-side via a cursor (PAGE_SIZE
+// rows at a time, one page shown at a time — like a list view) instead of
+// fetching the whole result set in one response. This replaced an earlier
+// design (a confirm dialog offering "Run anyway" vs a separate "Stream"
+// button) that the user found the modal for this genuinely annoying;
+// unconditional paging removes the need to ask. Cursors are forward-only
+// (no server-side "previous page"), so there's a page counter + "Next page"
+// but no "Prev" — re-running Run restarts at page 1. Non-SELECT statements
+// and multi-statement bodies aren't cursor-pageable (the engine cursors a
+// single rows-producing statement) and still go through the one-shot call.
+const PAGE_SIZE = 200;
 
 interface Session {
   txnId: number | string;
   isolation: string;
 }
-interface StreamState {
+interface PagedState {
   cursorId: string;
   columns: string[];
   rows: unknown[][];
+  page: number;
   done: boolean;
   remaining: number;
 }
@@ -222,55 +225,23 @@ export function SqlEditor({
     return parsed;
   }
 
-  // ---- cursor streaming -----------------------------------------------------
-  const [stream, setStream] = useState<StreamState | null>(null);
+  // ---- cursor paging (single-SELECT default; see PAGE_SIZE comment) --------
+  const [paged, setPaged] = useState<PagedState | null>(null);
 
-  async function stopStream(current = stream) {
+  async function closePaged(current = paged) {
     if (current && !current.done) await cursorClose(current.cursorId);
-    setStream(null);
+    setPaged(null);
   }
 
-  async function loadMore(current: StreamState) {
+  async function nextPage() {
+    if (!paged || paged.done) return;
     setLoading(true);
     try {
-      const p = await cursorPage(current.cursorId, 200);
-      setStream({
-        ...current,
-        columns: p.columns.length ? p.columns : current.columns,
-        rows: [...current.rows, ...p.rows],
-        done: p.done,
-        remaining: p.remaining,
-      });
+      const p = await cursorPage(paged.cursorId, PAGE_SIZE);
+      setPaged({ ...paged, columns: p.columns.length ? p.columns : paged.columns, rows: p.rows, page: paged.page + 1, done: p.done, remaining: p.remaining });
     } catch (e: any) {
       setError({ code: e?.code, message: e?.message ?? String(e), status: e?.status });
-      setStream(null);
     } finally {
-      setLoading(false);
-    }
-  }
-
-  async function startStream() {
-    setError(null);
-    setResults(null);
-    setPlanLines(null);
-    setStream(null);
-    let params: unknown[];
-    try {
-      params = parseParams();
-    } catch (e: any) {
-      setError({ code: 'BAD_PARAMS', message: `params: ${e.message}`, status: 0 });
-      return;
-    }
-    setLoading(true);
-    try {
-      const c = await runSqlCursor(sql, params);
-      const initial: StreamState = { cursorId: c.cursorId, columns: c.columns, rows: [], done: false, remaining: c.rowCount ?? 0 };
-      setStream(initial);
-      setLoading(false);
-      await loadMore(initial);
-    } catch (e: any) {
-      setError({ code: e?.code, message: e?.message ?? String(e), status: e?.status });
-      setStream(null);
       setLoading(false);
     }
   }
@@ -296,16 +267,6 @@ export function SqlEditor({
     }
   }
 
-  const [confirmRunOpen, setConfirmRunOpen] = useState(false);
-
-  function handleRunClick() {
-    if (looksUnbounded(sql)) {
-      setConfirmRunOpen(true);
-      return;
-    }
-    run();
-  }
-
   async function run() {
     setLoading(true);
     setError(null);
@@ -314,7 +275,7 @@ export function SqlEditor({
     setServerMs(null);
     setRanSelect(false);
     setPlanLines(null);
-    setStream(null);
+    await closePaged();
 
     let params: unknown[];
     try {
@@ -325,16 +286,21 @@ export function SqlEditor({
       return;
     }
 
-    try {
-      const out = await runSql(sql, params, { txnId: (session?.txnId ?? null) as any });
-      setResults(out.results);
-      setRoundTripMs(out.roundTripMs);
-      pushHistory(sql);
+    // Single-SELECT: page server-side via a cursor instead of one giant
+    // response (see PAGE_SIZE comment above). Everything else (INSERT/
+    // UPDATE/DELETE/DDL, multi-statement bodies) isn't cursor-pageable and
+    // goes through the plain one-shot call below.
+    if (isSingleSelect(sql)) {
+      const start = performance.now();
+      try {
+        const c = await runSqlCursor(sql, params);
+        const p = await cursorPage(c.cursorId, PAGE_SIZE);
+        const roundTrip = performance.now() - start;
+        setPaged({ cursorId: c.cursorId, columns: p.columns.length ? p.columns : c.columns, rows: p.rows, page: 1, done: p.done, remaining: p.remaining });
+        setRoundTripMs(roundTrip);
+        recordQuery(sql, roundTrip, 'ok', p.rows.length, 'select');
+        pushHistory(sql);
 
-      // Server-exec timing is meaningful only for a single read query, and is
-      // gathered by a COMPANION EXPLAIN ANALYZE call — never conflated with the
-      // round-trip above. Failure here is non-fatal (query already succeeded).
-      if (isSingleSelect(sql)) {
         setRanSelect(true);
         try {
           const ea = await explainAnalyze(sql, params);
@@ -342,13 +308,28 @@ export function SqlEditor({
         } catch {
           setServerMs(null);
         }
+      } catch (e: any) {
+        setError({ code: e?.code, message: e?.message ?? String(e), status: e?.status });
+        recordQuery(sql, performance.now() - start, 'error', 0, 'select');
+      } finally {
+        setLoading(false);
       }
+      return;
+    }
+
+    try {
+      const out = await runSql(sql, params, { txnId: (session?.txnId ?? null) as any });
+      setResults(out.results);
+      setRoundTripMs(out.roundTripMs);
+      pushHistory(sql);
     } catch (e: any) {
       setError({ code: e?.code, message: e?.message ?? String(e), status: e?.status });
-      // A failed mutating statement aborts + destroys the session server-side
-      // (Postgres-without-savepoints); reflect that so the UI doesn't keep
-      // sending a dead X-Txn-Id. Pure-read failures leave the session open.
-      if (session && (e?.code === 'TXN_NOT_FOUND' || !isSingleSelect(sql))) {
+      // This branch only ever runs non-single-SELECT statements (single
+      // SELECTs take the cursor path above) — a failed mutating/DDL statement
+      // aborts + destroys the session server-side (Postgres-without-
+      // savepoints), so reflect that here unconditionally rather than keep
+      // sending a dead X-Txn-Id.
+      if (session) {
         setSessionMsg(`Session #${session.txnId} aborted by the failed statement — re-begin to continue.`);
         setSession(null);
       }
@@ -366,14 +347,14 @@ export function SqlEditor({
     setServerMs(null);
     setRanSelect(false);
     setPlanLines(null);
-    stopStream();
+    closePaged();
     textareaRef.current?.focus();
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (!loading) handleRunClick();
+      if (!loading) run();
       return;
     }
     if (e.key === 'Tab') {
@@ -673,7 +654,7 @@ export function SqlEditor({
       <div className="flex items-center gap-3">
         <button
           className="h-8 rounded-md bg-brand px-3 text-md font-medium text-brand-text-on hover:bg-brand-hover disabled:opacity-45"
-          onClick={handleRunClick}
+          onClick={run}
           disabled={loading}
         >
           {loading ? 'Running…' : 'Run'}
@@ -684,14 +665,6 @@ export function SqlEditor({
           disabled={loading || !sql.trim()}
         >
           Explain
-        </button>
-        <button
-          className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong disabled:opacity-45"
-          onClick={startStream}
-          disabled={loading || !isSingleSelect(sql)}
-          title="Page a large read server-side via a cursor"
-        >
-          Stream
         </button>
         <button
           className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong disabled:opacity-45"
@@ -735,30 +708,22 @@ export function SqlEditor({
         </div>
       )}
 
-      {stream && (
+      {paged && (
         <>
           <div className="mb-1.5 flex items-center gap-2">
             <span className="font-mono text-sm text-text-light">
-              streaming · {stream.rows.length} rows loaded{stream.done ? ' · done' : ` · ~${stream.remaining} remaining`}
+              page {paged.page} · {paged.rows.length} rows{paged.done ? ' · end of results' : ` · ~${paged.remaining} more`}
             </span>
             <span className="flex-1" />
-            {!stream.done && (
-              <button
-                className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong disabled:opacity-45"
-                onClick={() => loadMore(stream)}
-                disabled={loading}
-              >
-                Load more
-              </button>
-            )}
             <button
-              className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong"
-              onClick={() => stopStream()}
+              className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong disabled:opacity-45"
+              onClick={nextPage}
+              disabled={loading || paged.done}
             >
-              Close
+              Next page →
             </button>
           </div>
-          <DataGrid result={{ type: 'rows', columns: stream.columns, rows: stream.rows }} />
+          <DataGrid result={{ type: 'rows', columns: paged.columns, rows: paged.rows }} />
         </>
       )}
 
@@ -769,47 +734,6 @@ export function SqlEditor({
             <DataGrid result={result} />
           </div>
         ))}
-
-      <Dialog open={confirmRunOpen} onOpenChange={setConfirmRunOpen}>
-        <DialogContent className="max-w-[440px] p-0">
-          <DialogHeader className="border-b border-border px-4 py-3">
-            <DialogTitle>No LIMIT on this query</DialogTitle>
-          </DialogHeader>
-          <div className="p-4">
-            <p className="m-0 text-md leading-relaxed">
-              This looks like an unbounded <code className="rounded-sm border border-border bg-secondary px-1 font-mono text-sm">SELECT</code> — Run fetches the
-              entire result set in one response, which can hang the tab on a large table. <b>Stream</b> pages it server-side via a
-              cursor instead.
-            </p>
-          </div>
-          <DialogFooter className="border-t border-border px-4 py-3">
-            <button
-              className="mr-auto h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong"
-              onClick={() => setConfirmRunOpen(false)}
-            >
-              Cancel
-            </button>
-            <button
-              className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong"
-              onClick={() => {
-                setConfirmRunOpen(false);
-                run();
-              }}
-            >
-              Run anyway
-            </button>
-            <button
-              className="h-8 rounded-md bg-brand px-3 text-md font-medium text-brand-text-on hover:bg-brand-hover"
-              onClick={() => {
-                setConfirmRunOpen(false);
-                startStream();
-              }}
-            >
-              Use Stream instead
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
