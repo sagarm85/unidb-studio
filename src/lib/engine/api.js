@@ -13,9 +13,25 @@ export const BASE_URL = RAW_URL.replace(/\/+$/, '');
 export const IS_CONFIGURED = BASE_URL.length > 0;
 
 // The bearer token starts from the build-time env but is mutable at runtime so
-// the header's "Generate token" flow (dev only) can apply a fresh one without
-// a rebuild. All requests read it through here.
-let token = (ENV.VITE_UNIDB_TOKEN ?? '').trim();
+// the header's "Generate token" flow (dev only) and the dev-login "switch
+// identity" flow can apply a fresh one without a rebuild. All requests read
+// it through here.
+//
+// Mirrored into sessionStorage so a runtime-applied token (dev-login in
+// particular) survives the page reload that switching identity forces —
+// every tab fetches its data once on mount with whatever token was active
+// then, so nothing re-evaluates under the new identity without a reload,
+// and a reload would otherwise fall straight back to the build-time env
+// token, undoing the switch it was supposed to complete.
+const SESSION_TOKEN_KEY = 'unidb_studio_token_override';
+function readSessionToken() {
+  try {
+    return sessionStorage.getItem(SESSION_TOKEN_KEY) ?? '';
+  } catch {
+    return ''; // sessionStorage unavailable (e.g. private mode) — env token only
+  }
+}
+let token = readSessionToken() || (ENV.VITE_UNIDB_TOKEN ?? '').trim();
 
 export function getToken() {
   return token;
@@ -23,6 +39,12 @@ export function getToken() {
 
 export function setToken(t) {
   token = (t ?? '').trim();
+  try {
+    if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    else sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {
+    /* sessionStorage unavailable — in-memory only, same as before */
+  }
 }
 
 // A normalized error the UI can render uniformly: always has {message, code}.

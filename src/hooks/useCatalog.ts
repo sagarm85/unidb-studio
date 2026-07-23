@@ -52,7 +52,19 @@ export function useCatalog() {
     setTablesLoading(true);
     setTablesError(null);
     try {
-      const s = await getSchema();
+      // getSchema() reads information_schema.*, which — unlike GET /tables —
+      // needs its own separate grant (see unidb backlog item 108; a user with
+      // full CRUD on every table can still get PERMISSION_DENIED here). Treat
+      // that specific failure the same as "catalog not supported" and fall
+      // back to the older, ungated GET /tables route rather than surfacing a
+      // dead sidebar — any other error (network, etc.) still propagates.
+      let s: Awaited<ReturnType<typeof getSchema>>;
+      try {
+        s = await getSchema();
+      } catch (e: any) {
+        if (e?.code !== 'PERMISSION_DENIED') throw e;
+        s = { supported: false } as Awaited<ReturnType<typeof getSchema>>;
+      }
       let nextTables: CatalogTable[];
       let nextRelationships: CatalogRelationship[];
       let nextSource: 'catalog' | 'tables';

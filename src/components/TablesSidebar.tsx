@@ -36,6 +36,13 @@ export function TablesSidebar({
 }) {
   const [open, setOpen] = useState(true);
   const [query, setQuery] = useState('');
+  const [manualName, setManualName] = useState('');
+
+  function goToManualTable() {
+    const n = manualName.trim();
+    if (!n) return;
+    onSelect({ name: n, columns: [] });
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -117,7 +124,34 @@ export function TablesSidebar({
             <Skeleton className="h-7 w-full" />
           </div>
         ) : error ? (
-          <EmptyState message={`${error.code}: ${error.message}`} />
+          <div className="flex flex-col gap-2">
+            {error.code === 'PERMISSION_DENIED' && (
+              <p className="m-0 text-xs leading-relaxed text-text-light">
+                This user isn't granted schema read, so the table list can't be discovered — but queries against tables you do have
+                access to still work. Type a table name to open it directly:
+              </p>
+            )}
+            <EmptyState message={`${error.code}: ${error.message}`} />
+            {error.code === 'PERMISSION_DENIED' && (
+              <div className="flex gap-1">
+                <input
+                  value={manualName}
+                  onChange={(e) => setManualName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && goToManualTable()}
+                  placeholder="table name…"
+                  spellCheck={false}
+                  className="h-7 min-w-0 flex-1 rounded-md border border-border bg-secondary px-2 font-mono text-sm outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
+                />
+                <button
+                  className="h-7 shrink-0 rounded-md border border-border bg-secondary px-2 text-sm hover:border-border-strong disabled:opacity-45"
+                  onClick={goToManualTable}
+                  disabled={!manualName.trim()}
+                >
+                  Go
+                </button>
+              </div>
+            )}
+          </div>
         ) : !supported ? (
           <EmptyState message="GET /tables not available on this server yet. Use the SQL editor to query directly." />
         ) : tables.length === 0 ? (

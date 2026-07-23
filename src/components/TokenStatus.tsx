@@ -16,6 +16,20 @@ function decodeExp(t: string): number | null {
   }
 }
 
+// The `sub` claim is the only place "who am I" lives — decode it client-side
+// (same as decodeExp) rather than round-tripping to GET /auth/whoami just to
+// paint a badge. Absent `sub` is a real, meaningful state (implicit
+// superuser, e.g. the .env.local static dev token), not an error.
+function decodeSub(t: string): string | null {
+  try {
+    const b64 = t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(b64));
+    return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 function fmtRemaining(s: number): string {
   if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
   if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -29,6 +43,7 @@ export function TokenStatus() {
   const [mintError, setMintError] = useState<string | null>(null);
 
   const exp = useMemo(() => decodeExp(token), [token]);
+  const sub = useMemo(() => decodeSub(token), [token]);
   const remaining = exp === null ? null : exp - now;
   const active = remaining !== null && remaining > 0;
 
@@ -37,7 +52,12 @@ export function TokenStatus() {
     return () => clearInterval(id);
   }, []);
 
-  async function generate() {
+  // `reload` is false for the silent auto-mint on mount (every fresh page
+  // load would otherwise reload-loop) and true only when the button is
+  // clicked by hand — same reasoning as login() below: switching the active
+  // identity leaves every already-fetched tab stale, so a manual switch
+  // needs a reload, an automatic first-mint on an empty page does not.
+  async function generate(reload = false) {
     setMinting(true);
     setMintError(null);
     try {
@@ -46,6 +66,7 @@ export function TokenStatus() {
       const out = await res.json();
       setEngineToken(out.token);
       setToken(out.token);
+      if (reload) window.location.reload();
     } catch (e) {
       setMintError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -88,6 +109,11 @@ export function TokenStatus() {
       const out: any = await devLogin(u);
       setEngineToken(out.token);
       setToken(out.token);
+      // Every tab fetched its data once under the previous identity —
+      // reload so all of them re-read it as the new one (see the
+      // sessionStorage mirror in api.js that keeps this token past the
+      // reload instead of falling back to the build-time env token).
+      window.location.reload();
     } catch (e: any) {
       setLoginError(e?.message ?? String(e));
     } finally {
@@ -96,31 +122,36 @@ export function TokenStatus() {
   }, [username]);
 
   return (
-    <span className="flex items-center gap-2">
-      {!token ? (
-        <>
-          <span className="size-1.5 shrink-0 rounded-full bg-warn" />
-          <span className="text-xs whitespace-nowrap text-text-light">no token</span>
-        </>
-      ) : active ? (
-        <>
-          <span className="size-1.5 shrink-0 rounded-full bg-ok" />
-          <span
-            className={cn(
-              'font-mono text-xs whitespace-nowrap text-text-light',
-              remaining! < 300 && 'font-semibold text-warn',
-            )}
-            title="time until the token expires"
-          >
-            {fmtRemaining(remaining!)}
-          </span>
-        </>
-      ) : (
-        <>
-          <span className="size-1.5 shrink-0 rounded-full bg-error" />
-          <span className="text-xs whitespace-nowrap text-text-light">expired</span>
-        </>
-      )}
+    <span className="flex items-center gap-3">
+      {/* Identity — the one thing everyone watching needs to read at a
+          glance, so it's a plain sentence, not a bare badge + tooltip. */}
+      <span className="flex items-center gap-1.5">
+        {!token ? (
+          <>
+            <span className="size-1.5 shrink-0 rounded-full bg-warn" />
+            <span className="text-xs whitespace-nowrap text-text-light">No token configured</span>
+          </>
+        ) : active ? (
+          <>
+            <span className="size-1.5 shrink-0 rounded-full bg-ok" />
+            <span className="text-xs whitespace-nowrap text-text-light">
+              Signed in as{' '}
+              <b className={cn('font-mono font-semibold', sub ? 'text-brand' : 'text-warn')}>{sub ?? 'implicit superuser'}</b>
+            </span>
+            <span
+              className={cn('text-xs whitespace-nowrap text-text-faint', remaining! < 300 && 'font-semibold text-warn')}
+              title="Time until this session's token expires"
+            >
+              · expires in {fmtRemaining(remaining!)}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="size-1.5 shrink-0 rounded-full bg-error" />
+            <span className="text-xs whitespace-nowrap text-text-light">Session expired</span>
+          </>
+        )}
+      </span>
 
       {canGenerate && (
         <button
@@ -128,8 +159,9 @@ export function TokenStatus() {
             'rounded-sm px-2 py-0.5 text-xs font-semibold whitespace-nowrap',
             token && !active ? 'bg-brand-subtle text-brand hover:brightness-110' : 'text-text-light hover:bg-accent hover:text-foreground',
           )}
-          onClick={generate}
+          onClick={() => generate(true)}
           disabled={minting}
+          title="Mint a fresh dev token (superuser) from the local Vite dev server"
         >
           {minting ? 'Generating…' : token && !active ? 'Regenerate' : 'Generate'}
         </button>
@@ -141,15 +173,16 @@ export function TokenStatus() {
         </span>
       )}
 
-      {devLoginEnabled && !active && (
-        <span className="flex items-center gap-1">
+      {devLoginEnabled && (
+        <span className="flex items-center gap-1.5">
+          <span className="text-xs whitespace-nowrap text-text-muted">Switch user</span>
           <input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && login()}
             placeholder="username"
             spellCheck={false}
-            title="Dev login (UNIDB_DEV_LOGIN=1) — issues a token for an existing user, no password"
+            title="Dev login — issues a real token for an existing user, no password. The page reloads afterward so every tab re-reads its data as that user."
             className="h-6 w-24 rounded-sm border border-border bg-secondary px-1.5 font-mono text-xs outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
           />
           <button

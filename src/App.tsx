@@ -111,12 +111,20 @@ export default function App() {
     window.history.replaceState({}, '', url);
   }, [tab]);
 
-  const connectionState: 'not-configured' | 'connecting' | 'offline' | 'connected' = !IS_CONFIGURED
+  // A schema-read PERMISSION_DENIED (the current user just isn't grantted
+  // information_schema/unidb_catalog access — expected for a non-superuser)
+  // is not the same fact as the server being unreachable. Conflating them
+  // as one "OFFLINE" badge is actively misleading: the server is fine, this
+  // identity just can't see the catalog. Only a genuine transport/other
+  // failure earns "OFFLINE".
+  const connectionState: 'not-configured' | 'connecting' | 'offline' | 'restricted' | 'connected' = !IS_CONFIGURED
     ? 'not-configured'
     : catalog.tablesLoading
       ? 'connecting'
       : catalog.tablesError
-        ? 'offline'
+        ? catalog.tablesError.code === 'PERMISSION_DENIED'
+          ? 'restricted'
+          : 'offline'
         : 'connected';
 
   function selectTable(t: CatalogTable) {
@@ -204,6 +212,14 @@ export default function App() {
           {connectionState === 'offline' && (
             <span className="rounded-sm bg-warn-subtle px-2 py-0.5 text-xs font-semibold tracking-wide text-warn">
               OFFLINE
+            </span>
+          )}
+          {connectionState === 'restricted' && (
+            <span
+              className="rounded-sm bg-info/12 px-2 py-0.5 text-xs font-semibold tracking-wide text-info"
+              title="Server is reachable — this signed-in user just isn't granted schema/catalog access. Table names typed by hand still work."
+            >
+              LIMITED ACCESS
             </span>
           )}
           {connectionState === 'not-configured' && (

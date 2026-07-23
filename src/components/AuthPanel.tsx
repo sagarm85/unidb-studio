@@ -401,7 +401,7 @@ function RolesTab({
                 selected === r.name && 'bg-selected',
               )}
             >
-              <span className="flex items-center gap-1.5 truncate font-mono">
+              <span className="flex items-center gap-1.5 truncate font-mono" title={r.name}>
                 <Shield className={cn('size-3.5 shrink-0 text-text-muted', selected === r.name && 'text-brand')} />
                 {r.name}
               </span>
@@ -487,7 +487,9 @@ function RolesTab({
                 ) : (
                   grantsOf(selected).map(({ table, ops }) => (
                     <div key={table} className="flex items-center gap-2 border-b border-border-muted px-3 py-2 last:border-b-0">
-                      <span className="w-32 shrink-0 truncate font-mono text-md">{table}</span>
+                      <span className="w-32 shrink-0 truncate font-mono text-md" title={table}>
+                        {table}
+                      </span>
                       <div className="flex flex-wrap gap-1">
                         {ops.map((op) => (
                           <Badge key={op} variant={opVariant(op)}>
@@ -682,8 +684,12 @@ function GrantsTab({
         ) : (
           filtered.map((g, i) => (
             <div key={`${g.role}-${g.table}-${g.operation}-${i}`} className="grid grid-cols-[1fr_1fr_100px_80px] items-center gap-2 border-b border-border-muted px-3 py-2 last:border-b-0 hover:bg-accent">
-              <span className="truncate font-mono text-md">{g.role}</span>
-              <span className="truncate font-mono text-md">{g.table}</span>
+              <span className="truncate font-mono text-md" title={g.role}>
+                {g.role}
+              </span>
+              <span className="truncate font-mono text-md" title={g.table}>
+                {g.table}
+              </span>
               <Badge variant={opVariant(g.operation)}>{g.operation}</Badge>
               <button className="justify-self-end text-sm text-text-muted hover:text-error" onClick={() => revoke(g)} disabled={busy}>
                 Revoke
@@ -764,6 +770,71 @@ function GrantsTab({
 
 // ============================== Policies ====================================
 
+// Starter predicates for the New Policy templates panel — Supabase-style
+// quick-fill, scoped to what unidb's CREATE POLICY grammar actually supports
+// (no Permissive/Restrictive, no TO <role> — just ON/FOR/USING/WITH CHECK).
+const POLICY_TEMPLATES: {
+  label: string;
+  desc: string;
+  op: (typeof POLICY_OPS)[number];
+  namePrefix: string;
+  predicate: string;
+  withCheck?: string;
+}[] = [
+  {
+    label: 'Owner only',
+    desc: 'Rows are only visible to the user named in the owner column.',
+    op: 'SELECT',
+    namePrefix: 'owner_only',
+    predicate: 'owner = current_user',
+  },
+  {
+    label: 'Public read',
+    desc: 'Every authenticated caller can read every row.',
+    op: 'SELECT',
+    namePrefix: 'public_read',
+    predicate: 'true',
+  },
+  {
+    label: 'Tenant isolation',
+    desc: 'Rows are scoped to a tenant/org id matching the caller.',
+    op: 'SELECT',
+    namePrefix: 'tenant_isolation',
+    predicate: 'tenant_id = current_user',
+  },
+  {
+    label: 'Own writes only',
+    desc: 'A caller can only insert rows attributed to themselves.',
+    op: 'INSERT',
+    namePrefix: 'own_writes_only',
+    predicate: 'owner = current_user',
+  },
+  {
+    label: 'Update own rows',
+    desc: "USING gates which rows can be touched; WITH CHECK stops a row being reassigned away from its owner.",
+    op: 'UPDATE',
+    namePrefix: 'update_own_rows',
+    predicate: 'owner = current_user',
+    withCheck: 'owner = current_user',
+  },
+  {
+    label: 'Full access for owner',
+    desc: 'Owner can select/insert/update/delete their own rows — one policy, every operation.',
+    op: 'ALL',
+    namePrefix: 'owner_full_access',
+    predicate: 'owner = current_user',
+    withCheck: 'owner = current_user',
+  },
+];
+
+function buildPolicySql(name: string, table: string, op: string, predicate: string, withCheck: string): string {
+  const n = name.trim() || '<name>';
+  const t = table || '<table>';
+  const pred = predicate.trim() || '<predicate>';
+  const withCheckClause = withCheck.trim() ? ` WITH CHECK (${withCheck.trim()})` : '';
+  return `CREATE POLICY ${quoteIdent(n)} ON ${quoteIdent(t)} FOR ${op} USING (${pred})${withCheckClause}`;
+}
+
 function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tables: string[]; onMutated: () => Promise<void> }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [newOpen, setNewOpen] = useState(false);
@@ -792,21 +863,21 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
   function submitNewPolicy() {
     const n = draftName.trim();
     const pred = draftPredicate.trim();
-    const withCheck = draftWithCheck.trim();
     if (!n || !draftTable || !pred) return setError({ message: 'name, table, and predicate are all required' });
-    const withCheckClause = withCheck ? ` WITH CHECK (${withCheck})` : '';
-    run(
-      `CREATE POLICY ${quoteIdent(n)} ON ${quoteIdent(draftTable)} FOR ${draftOp} USING (${pred})${withCheckClause}`,
-      'Policy created',
-      () => {
-        setDraftName('');
-        setDraftTable('');
-        setDraftOp('SELECT');
-        setDraftPredicate('');
-        setDraftWithCheck('');
-        setNewOpen(false);
-      },
-    );
+    run(buildPolicySql(n, draftTable, draftOp, pred, draftWithCheck), 'Policy created', () => {
+      setDraftName('');
+      setDraftTable('');
+      setDraftOp('SELECT');
+      setDraftPredicate('');
+      setDraftWithCheck('');
+      setNewOpen(false);
+    });
+  }
+  function applyTemplate(t: (typeof POLICY_TEMPLATES)[number]) {
+    setDraftOp(t.op);
+    setDraftPredicate(t.predicate);
+    setDraftWithCheck(t.withCheck ?? '');
+    if (!draftName.trim()) setDraftName(t.namePrefix);
   }
   function confirmDrop() {
     if (!dropConfirm) return;
@@ -856,7 +927,9 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
                 const isOpen = expanded.has(key);
                 return (
                   <div key={key} className="flex items-start gap-2 border-b border-border-muted px-3 py-2 last:border-b-0 hover:bg-accent">
-                    <span className="w-36 shrink-0 truncate font-mono text-md">{p.name}</span>
+                    <span className="w-52 shrink-0 truncate font-mono text-md" title={p.name}>
+                      {p.name}
+                    </span>
                     <div className="flex shrink-0 gap-1">
                       <Badge variant={opVariant(p.operation)}>{p.operation}</Badge>
                       {!p.enforced && (
@@ -894,67 +967,95 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
       )}
 
       <Dialog open={newOpen} onOpenChange={(open) => !open && setNewOpen(false)}>
-        <DialogContent className="max-w-[480px] p-0">
+        <DialogContent className="max-w-[700px] p-0">
           <DialogHeader className="border-b border-border px-4 py-3">
             <DialogTitle>New policy</DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col gap-3 p-4">
-            <label className="flex flex-col gap-1 text-sm text-text-light">
-              Name
-              <input
-                value={draftName}
-                onChange={(e) => setDraftName(e.target.value)}
-                placeholder="policy name"
-                spellCheck={false}
-                className="h-8 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
-              />
-            </label>
-            <div className="flex gap-2">
-              <label className="flex flex-1 flex-col gap-1 text-sm text-text-light">
-                Table
-                <select value={draftTable} onChange={(e) => setDraftTable(e.target.value)} className="h-8 rounded-md border border-border bg-secondary px-2 text-md">
-                  <option value="">choose…</option>
-                  {tables.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </label>
+          <div className="grid grid-cols-[1fr_220px] gap-0 max-h-[70vh] overflow-hidden">
+            <div className="flex flex-col gap-3 overflow-y-auto p-4">
               <label className="flex flex-col gap-1 text-sm text-text-light">
-                Operation
-                <select value={draftOp} onChange={(e) => setDraftOp(e.target.value as typeof draftOp)} className="h-8 rounded-md border border-border bg-secondary px-2 text-md">
-                  {POLICY_OPS.map((op) => (
-                    <option key={op} value={op}>
-                      {op}
-                    </option>
-                  ))}
-                </select>
+                Policy name
+                <input
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  placeholder="policy name"
+                  spellCheck={false}
+                  className="h-8 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
+                />
               </label>
-            </div>
-            <label className="flex flex-col gap-1 text-sm text-text-light">
-              Predicate
-              <Textarea
-                value={draftPredicate}
-                onChange={(e) => setDraftPredicate(e.target.value)}
-                placeholder="e.g.  owner = current_user  or  tenant_id = 42"
-                spellCheck={false}
-                className="min-h-10"
-              />
-              <span className="text-xs text-text-muted">Use <code>current_user</code> (no parentheses) for the caller's identity.</span>
-            </label>
-            {(draftOp === 'UPDATE' || draftOp === 'ALL') && (
+              <div className="flex gap-2">
+                <label className="flex flex-1 flex-col gap-1 text-sm text-text-light">
+                  Table
+                  <select value={draftTable} onChange={(e) => setDraftTable(e.target.value)} className="h-8 rounded-md border border-border bg-secondary px-2 text-md">
+                    <option value="">choose…</option>
+                    {tables.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-sm text-text-light">
+                  Command
+                  <select value={draftOp} onChange={(e) => setDraftOp(e.target.value as typeof draftOp)} className="h-8 rounded-md border border-border bg-secondary px-2 text-md">
+                    {POLICY_OPS.map((op) => (
+                      <option key={op} value={op}>
+                        {op}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <label className="flex flex-col gap-1 text-sm text-text-light">
-                WITH CHECK expression (optional, defaults to USING)
+                USING expression
                 <Textarea
-                  value={draftWithCheck}
-                  onChange={(e) => setDraftWithCheck(e.target.value)}
-                  placeholder="validates the NEW row on write — leave blank to reuse the USING predicate"
+                  value={draftPredicate}
+                  onChange={(e) => setDraftPredicate(e.target.value)}
+                  placeholder="e.g.  owner = current_user  or  tenant_id = 42"
                   spellCheck={false}
                   className="min-h-10"
                 />
+                <span className="text-xs text-text-muted">Use <code>current_user</code> (no parentheses) for the caller's identity.</span>
               </label>
-            )}
+              {(draftOp === 'UPDATE' || draftOp === 'ALL') && (
+                <label className="flex flex-col gap-1 text-sm text-text-light">
+                  WITH CHECK expression (optional, defaults to USING)
+                  <Textarea
+                    value={draftWithCheck}
+                    onChange={(e) => setDraftWithCheck(e.target.value)}
+                    placeholder="validates the NEW row on write — leave blank to reuse the USING predicate"
+                    spellCheck={false}
+                    className="min-h-10"
+                  />
+                </label>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold tracking-wide text-text-muted uppercase">SQL preview</span>
+                <pre className="m-0 overflow-x-auto rounded-md border border-border bg-secondary px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap text-text-light">
+                  {buildPolicySql(draftName, draftTable, draftOp, draftPredicate, draftWithCheck)}
+                </pre>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1 overflow-y-auto border-l border-border bg-secondary/40 p-3">
+              <span className="mb-1 text-xs font-semibold tracking-wide text-text-muted uppercase">Templates</span>
+              {POLICY_TEMPLATES.map((t) => (
+                <button
+                  key={t.label}
+                  onClick={() => applyTemplate(t)}
+                  className="flex flex-col gap-1 rounded-md border border-border bg-card px-2.5 py-2 text-left hover:border-border-strong hover:bg-accent"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Badge variant={opVariant(t.op)} className="shrink-0">
+                      {t.op}
+                    </Badge>
+                    <span className="text-sm font-semibold">{t.label}</span>
+                  </span>
+                  <span className="text-xs leading-snug text-text-muted">{t.desc}</span>
+                </button>
+              ))}
+            </div>
           </div>
           <DialogFooter className="border-t border-border px-4 py-3">
             <button className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong" onClick={() => setNewOpen(false)}>
@@ -1156,7 +1257,9 @@ function WhoamiTab() {
               <div className="flex flex-1 flex-col overflow-hidden rounded-md border border-border">
                 {who.privileges.map((p) => (
                   <div key={p.table} className="flex items-center gap-2 border-b border-border-muted px-2 py-1.5 last:border-b-0">
-                    <span className="w-40 shrink-0 truncate font-mono text-sm">{p.table}</span>
+                    <span className="w-40 shrink-0 truncate font-mono text-sm" title={p.table}>
+                      {p.table}
+                    </span>
                     <div className="flex flex-wrap gap-1">
                       {p.ops.map((op) => (
                         <Badge key={op} variant={opVariant(op)}>
