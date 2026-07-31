@@ -35,14 +35,14 @@ Five panels, all over `POST /sql` and `GET /tables`:
    only multi-statement-atomicity mechanism). Reports total wall-clock and
    rows/sec.
 
-## Authorization panels (Roles, Policies, Authentication)
+## Authorization panels (Roles, Policies, Authentication, API Docs)
 
-Three more panels cover Supabase-parity auth/authorization, all live against
-unidb main's merged auth contract (PR #222 — password login/signup/refresh/
-logout, `auth.uid()`/`auth.jwt()`, role-scoped policies, built-in roles). See
-[`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
-full plan, status, and the two known engine gaps it flags (existing-user
-password reset; `unidb_catalog.policies` not exposing a policy's `TO` roles).
+Four more panels cover Supabase-parity auth/authorization/API surface, all
+live against unidb main's merged auth + auto-REST contract (PR #222 + #223).
+See [`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for
+the full plan, status, and the two feature-detected pieces that activate
+automatically once specific follow-up engine work lands (existing-user
+password reset; `unidb_catalog.policies` exposing a policy's `TO` roles).
 
 - **Roles** — users + roles list, transitive role-membership editor, a
   per-table GRANT/REVOKE checkbox matrix, and the three built-in roles
@@ -54,12 +54,18 @@ password reset; `unidb_catalog.policies` not exposing a policy's `TO` roles).
   helper-insert buttons for `current_user`, `auth.uid()`, and
   `auth.jwt() ->> 'claim'` (always parenthesised, per the documented `->>`
   precedence caveat), plus **Preview as role** (`POST /auth/preview`).
-- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami`, a users
-  list with create-with-password/delete (`CREATE USER … PASSWORD '…'` /
-  `DROP USER`), and a flow tester over the real
-  `POST /auth/{login,signup,refresh,logout}` routes — tokens shown are kept
-  in-memory only, never persisted or swapped into the Studio's own admin
-  session token.
+- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami` (now also
+  showing the JWKS discovery URL and signup status), a users list with
+  create-with-password/delete, a reset-password control that quietly
+  activates once the engine accepts `ALTER USER … PASSWORD`, and a flow
+  tester over the real `POST /auth/{login,signup,refresh,logout}` routes —
+  tokens shown are kept in-memory only, never persisted or swapped into the
+  Studio's own admin session token.
+- **API Docs** — a live schema + curl-snippet viewer generated from the
+  engine's own `GET /rest/v1` OpenAPI 3 document, plus a **GET explorer**
+  exercising the real `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/
+  in/is`)/`order=`/`limit`/`offset` query surface over
+  `/rest/v1/<table>` and rendering results live.
 
 ## Configure it (point it at a server)
 

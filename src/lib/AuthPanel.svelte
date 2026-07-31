@@ -1,5 +1,5 @@
 <script>
-  import { getAuthMeta, getWhoami, getAuthzSnapshot, runSql, authLogin, authSignup, authRefresh, authLogout } from './api.js';
+  import { getAuthMeta, getWhoami, getAuthzSnapshot, runSql, authLogin, authSignup, authRefresh, authLogout, BASE_URL } from './api.js';
 
   // Authentication panel (Workstream G1 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
@@ -11,12 +11,30 @@
   // engine doesn't yet support is a clearly labeled "not available" card,
   // never a dead-looking form.
   //
-  // Still NOT available (verified against unidb main's src/authz/mod.rs —
-  // `Engine::set_password` exists but is Rust-only, no SQL/HTTP surface):
-  // resetting an EXISTING user's password. Only set-at-creation works.
-  // Also not available: listing a user's active sessions (only single-token
-  // refresh/logout exist, no enumeration route), production issuer (A5),
-  // and asymmetric JWT/JWKS (A6).
+  // Password reset for an EXISTING user (`ALTER USER … PASSWORD '…'`) is
+  // feature-detected, not assumed: as of this session it isn't in unidb
+  // main's auth-DDL grammar yet (`src/authz/mod.rs::parse_auth_stmt` has no
+  // ALTER USER arm — confirmed by reading source, not guessed), but the
+  // engine owner has committed to shipping it imminently with that exact
+  // syntax. The control below actually attempts the real statement; a
+  // SQL-parse/unsupported error (the only way an unrecognized statement can
+  // fail) permanently hides it for the rest of this session rather than
+  // repeatedly erroring, and any other error (e.g. a real permission
+  // problem) surfaces normally without disabling the feature — so the
+  // control quietly starts working the moment the server understands it,
+  // with no code change needed here.
+  //
+  // Session listing/revoke-by-id stays a static "not available" card: there
+  // is no route or catalog view for it yet at all (not even a name), so
+  // there is nothing to probe — inventing a URL to try would violate "never
+  // assume an undocumented route."
+  //
+  // Production issuer (A5, `UNIDB_JWT_SIGNING_KEY`) and asymmetric JWT/JWKS
+  // (A6, `UNIDB_JWT_PUBLIC_KEY` + `GET /.well-known/jwks.json`) both shipped
+  // in PR #223 — surfaced in the server-config card below via `GET
+  // /auth/meta`'s `dev_login_enabled`, which now reflects either issuer path
+  // (verified in `src/server/handlers.rs::get_auth_meta` — the field name is
+  // a holdover, its meaning broadened; the UI label says so).
   //
   // Role/grant/membership editing (including the three built-in roles) is
   // the Roles tab's job (G3) — not duplicated here.
@@ -29,6 +47,7 @@
   let usersSupported = $state(true);
 
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const UNSUPPORTED_SQL_CODES = new Set(['SQL_PARSE_ERROR', 'SQL_UNSUPPORTED', 'SQL_PLAN_ERROR']);
 
   $effect(() => { load(); });
 
@@ -98,6 +117,38 @@
     }
   }
 
+  // ── reset an existing user's password (feature-detected; see header note) ─
+  let passwordResetSupported = $state(true); // true = try it; false = confirmed unsupported this session
+  let resetTarget   = $state(null); // username, or null
+  let resetPassword = $state('');
+  let resetBusy      = $state(false);
+  let resetError      = $state(null);
+
+  function openReset(name) {
+    resetTarget = name;
+    resetPassword = '';
+    resetError = null;
+  }
+
+  async function submitReset() {
+    if (!resetPassword) { resetError = 'Enter a new password.'; return; }
+    resetBusy = true;
+    resetError = null;
+    try {
+      await runSql(`ALTER USER ${resetTarget} PASSWORD ${sqlQuoteLiteral(resetPassword)}`);
+      resetTarget = null;
+    } catch (e) {
+      if (UNSUPPORTED_SQL_CODES.has(e.code)) {
+        passwordResetSupported = false;
+        resetTarget = null;
+      } else {
+        resetError = e.message ?? String(e);
+      }
+    } finally {
+      resetBusy = false;
+    }
+  }
+
   // ── auth flow tester (POST /auth/{login,signup,refresh,logout}) ──────────
   // Tokens are kept only in this component's in-memory state — never
   // persisted (localStorage/cookies) and never swapped into the Studio's own
@@ -153,13 +204,20 @@
   }
 
   // What's still genuinely unavailable — verified against unidb main source,
-  // not assumed.
-  const PENDING = [
-    { name: 'Reset an existing user’s password', detail: 'Engine::set_password exists in Rust only — no ALTER USER … PASSWORD DDL or REST route yet. New users can still get a password at creation time (above).', ref: 'gap' },
-    { name: 'List / revoke a user’s active sessions', detail: 'Only single-token refresh (rotate) and logout (revoke) exist — no GET route enumerates a user’s sessions.', ref: 'A4' },
-    { name: 'Production token issuer', detail: 'Un-gate issuance from UNIDB_DEV_LOGIN behind an explicit signing-key config', ref: 'A5' },
-    { name: 'Asymmetric JWT / JWKS', detail: 'RS256/ES256 verification + GET /.well-known/jwks.json', ref: 'A6' },
+  // not assumed. Password reset drops off this list automatically once the
+  // engine responds well to ALTER USER (passwordResetSupported flips false
+  // only after a confirmed unsupported-statement error, see above).
+  const PENDING_STATIC = [
+    { name: 'List / revoke a user’s active sessions', detail: 'Only single-token refresh (rotate) and logout (revoke) exist — no route or catalog view enumerates a user’s sessions yet.', ref: 'gap' },
   ];
+  const pending = $derived(
+    passwordResetSupported === false
+      ? [
+          { name: 'Reset an existing user’s password', detail: 'This server returned a SQL-parse/unsupported error for ALTER USER … PASSWORD — it doesn’t understand that statement yet. New users can still get a password at creation time (above).', ref: 'gap' },
+          ...PENDING_STATIC,
+        ]
+      : PENDING_STATIC,
+  );
 </script>
 
 <div class="auth">
@@ -183,14 +241,16 @@
                 <span class="pill ok">enforced — per-user privileges active</span>
               {/if}
             </dd>
-            <dt>Dev login (<code>POST /auth/login</code>)</dt>
+            <dt>Local token issuer (<code>login</code>/<code>signup</code>/<code>refresh</code>)</dt>
             <dd>
               {#if meta.dev_login_enabled}
-                <span class="pill warn">enabled — signing key configured</span>
+                <span class="pill warn">enabled — UNIDB_DEV_LOGIN or UNIDB_JWT_SIGNING_KEY is set</span>
               {:else}
                 <span class="pill muted">disabled — no signing key, login/signup/refresh will error</span>
               {/if}
             </dd>
+            <dt>Asymmetric verify (<code>GET /.well-known/jwks.json</code>)</dt>
+            <dd><a class="jwks-link" href="{BASE_URL}/.well-known/jwks.json" target="_blank" rel="noopener">{BASE_URL}/.well-known/jwks.json</a></dd>
             <dt>Signup (<code>POST /auth/signup</code>)</dt>
             <dd>
               {#if meta.signup_enabled}
@@ -258,6 +318,9 @@
               <span class="mono">{u.name}</span>
               {#if u.isSuperuser}<span class="pill super">superuser</span>{/if}
               <span class="grow"></span>
+              {#if passwordResetSupported !== false}
+                <button class="link-btn" title="Reset password" onclick={() => openReset(u.name)}>Reset password</button>
+              {/if}
               <button class="del-btn" title="Drop user" onclick={() => deleteUser(u.name)}>✕</button>
             </li>
           {/each}
@@ -266,6 +329,9 @@
       <p class="muted small foot-note">
         Password is optional at creation (needed only if this user will use password login/signup
         below). Role membership and table grants are managed in the <strong>Roles</strong> tab.
+        {#if passwordResetSupported === false}
+          Resetting an existing user's password isn't supported by this server yet.
+        {/if}
       </p>
     </section>
 
@@ -352,7 +418,7 @@
         cover ground it doesn't.
       </p>
       <ul class="pending-list">
-        {#each PENDING as item}
+        {#each pending as item}
           <li>
             <span class="pending-badge">{item.ref}</span>
             <div>
@@ -401,6 +467,35 @@
   </div>
 {/if}
 
+<!-- ── Reset password modal ── -->
+{#if resetTarget}
+  <div class="modal-backdrop" role="presentation" onpointerdown={() => (resetTarget = null)}>
+    <div class="modal" role="dialog" aria-label="Reset password" onpointerdown={(e) => e.stopPropagation()}>
+      <div class="modal-head">
+        <strong>Reset password · {resetTarget}</strong>
+        <button class="x" onclick={() => (resetTarget = null)}>✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted small">
+          Attempts <code>ALTER USER {resetTarget} PASSWORD '…'</code> — not yet in this engine's
+          shipped auth DDL as of this session; if the server doesn't recognize it, this control
+          hides itself for the rest of the session instead of erroring repeatedly.
+        </p>
+        <label class="field">
+          <span class="flabel">New password</span>
+          <input type="password" bind:value={resetPassword} onkeydown={(e) => e.key === 'Enter' && submitReset()} />
+        </label>
+        {#if resetError}<p class="err">{resetError}</p>{/if}
+      </div>
+      <div class="modal-foot">
+        <span class="grow"></span>
+        <button class="ghost" onclick={() => (resetTarget = null)}>Cancel</button>
+        <button onclick={submitReset} disabled={resetBusy}>{resetBusy ? 'Resetting…' : 'Reset password'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .auth { display: flex; flex-direction: column; gap: 16px; max-width: 900px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -418,6 +513,7 @@
   dt { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   dd { margin: 2px 0 0; font-size: 13px; }
   .mono { font-family: var(--mono); }
+  .jwks-link { font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
 
   .pill {
     display: inline-block; font-size: 11px; font-weight: 600; border-radius: 10px;
@@ -442,6 +538,11 @@
   }
   .user-list li:last-child { border-bottom: none; }
   .grow { flex: 1; }
+  .link-btn {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font-size: 11px; padding: 0 4px;
+  }
+  .link-btn:hover { text-decoration: underline; }
   .del-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; }
   .del-btn:hover { color: var(--err-fg); }
   .foot-note { margin-top: 10px; }

@@ -16,11 +16,12 @@
   import RolesPanel from './lib/RolesPanel.svelte';
   import PoliciesPanel from './lib/PoliciesPanel.svelte';
   import AuthPanel from './lib/AuthPanel.svelte';
+  import ApiDocsPanel from './lib/ApiDocsPanel.svelte';
   import { runSql } from './lib/api.js';
   import { quoteIdent } from './lib/format.js';
 
-  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth'
-  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth']);
+  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth' | 'apidocs'
+  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth','apidocs']);
   const _urlTab = new URLSearchParams(window.location.search).get('tab') ?? '';
   let tab = $state(VALID_TABS.has(_urlTab) ? _urlTab : 'sql');
   let selectedTable = $state(null);
@@ -220,6 +221,15 @@
         </svg>
         Authentication
       </button>
+      <button class:active={tab === 'apidocs'} onclick={() => (tab = 'apidocs')} title="API Docs">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M6 3h8l3 3v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+          <path d="M14 3v3h3"/>
+          <line x1="7.5" y1="10" x2="12.5" y2="10"/>
+          <line x1="7.5" y1="13" x2="12.5" y2="13"/>
+        </svg>
+        API Docs
+      </button>
     </div>
 
     <div class="nav-bottom">
@@ -258,7 +268,7 @@
           <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
         </div>
       {/if}
-      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies'}>
+      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies' || tab === 'apidocs'}>
         {#if tab === 'sql'}
           <SqlEditor bind:sql bind:paramsText />
         {:else if tab === 'records'}
@@ -295,6 +305,8 @@
           <PoliciesPanel {tables} />
         {:else if tab === 'auth'}
           <AuthPanel />
+        {:else if tab === 'apidocs'}
+          <ApiDocsPanel />
         {/if}
       </section>
     </main>

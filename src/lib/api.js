@@ -309,6 +309,78 @@ export async function getSchema() {
   return { tables, relationships, supported: true };
 }
 
+// ---- auto REST API (item 123, C1) — API-docs panel (G4) -------------------
+// GET/POST/PATCH/DELETE /rest/v1/<table> + GET /rest/v1 (catalog-derived
+// OpenAPI 3 doc). Verified against src/server/rest_resource.rs on unidb main
+// (PR #223) rather than docs/REST_API.md, which does not yet document this
+// route at all despite the code shipping — a real doc-staleness gap, flagged
+// in AUTH_POLICY_PANELS_PLAN.md rather than guessed around. Confirmed from
+// source, not assumed:
+//   - GET /rest/v1 (the OpenAPI doc) sits under the same require_jwt layer
+//     as every other data-plane route — NOT public — so it needs the bearer
+//     token like any other authenticated fetch here.
+//   - Every response reuses POST /sql's ExecResult JSON shape, not a bare
+//     PostgREST-style array of row objects: GET -> {type:'rows', columns,
+//     rows}; POST -> {type:'inserted', count}; PATCH -> {type:'updated',
+//     count}; DELETE -> {type:'deleted', count}.
+//   - Filter operators are exactly eq/neq/gt/gte/lt/lte/like/ilike/in/is
+//     (fixed allow-list, rest_resource.rs::parse_op) — `select=`, `order=
+//     col.asc|col.desc` (comma-separated), `limit=`, `offset=`.
+
+/**
+ * GET /rest/v1 — catalog-derived OpenAPI 3 document (item 123, C3).
+ * Degrades to `{ supported: false, doc: null }` on a pre-item-123 server
+ * (404) rather than throwing, so the panel can show a clear empty state.
+ */
+export async function getRestOpenApi() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/rest/v1`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, doc: null };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, doc: await res.json() };
+}
+
+/**
+ * GET /rest/v1/<table>?select=...&<filters>&order=...&limit=...&offset=...
+ * `filterParams` is an array of `[column, "<op>.<value>"]` pairs — already
+ * formatted by the caller (the op/value encoding is filter-shape-specific,
+ * e.g. `in` wraps its value in parens, `is` takes a bare null/true/false —
+ * kept in the component next to the filter-builder UI, mirroring how
+ * RolesPanel/PoliciesPanel build their own SQL text next to their forms).
+ *
+ * @param {string} table
+ * @param {{select?:string, filterParams?:Array<[string,string]>, order?:string, limit?:number, offset?:number}} [opts]
+ * @returns {Promise<{result:object, url:string}>} `result` is the raw
+ *   `{type:'rows', columns, rows}` body — pass straight to ResultsGrid.
+ */
+export async function restGet(table, opts = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams();
+  if (opts.select) qs.set('select', opts.select);
+  for (const [col, opValue] of opts.filterParams ?? []) qs.append(col, opValue);
+  if (opts.order) qs.set('order', opts.order);
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.offset != null) qs.set('offset', String(opts.offset));
+  const query = qs.toString();
+  const url = `${BASE_URL}/rest/v1/${encodeURIComponent(table)}${query ? `?${query}` : ''}`;
+
+  const start = performance.now();
+  let res;
+  try {
+    res = await fetch(url, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  const roundTripMs = performance.now() - start;
+  if (!res.ok) throw await toApiError(res);
+  return { result: await res.json(), url, roundTripMs };
+}
+
 // ---- authorization: roles, users, grants (item 24 + item 122 B3) --------
 // The three built-in roles (item 122, B3 — Supabase convention). Verified
 // against unidb's src/authz/mod.rs::RESERVED_ROLES: `anon` (no verified JWT
@@ -371,28 +443,74 @@ export async function getAuthzSnapshot() {
  * Columns: name, table_name, operation, using_expr, with_check_expr, enforced.
  * Degrades to `{ supported: false }` on a pre-item-24 server.
  */
+// `target_roles` on `unidb_catalog.policies` is feature-detected, not
+// assumed: as of this session the column doesn't exist yet (verified against
+// src/sql/information_schema.rs on unidb main — the relation's column list
+// is still `(name, table_name, operation, using_expr, with_check_expr,
+// enforced)`), but the engine owner is adding it imminently so the panel can
+// show which existing policies are `TO <role,…>` scoped. `null` here means
+// "column absent — caller must fall back to an unscoped display", tracked
+// once per session by the caller rather than re-probed on every load.
+let targetRolesColumnKnownAbsent = false;
+
+function normalizeTargetRoles(raw) {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) return raw;
+  return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 export async function listPolicies() {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
-  try {
-    const rows = await catalogRows(
-      `SELECT name, table_name, operation, using_expr, with_check_expr, enforced
-       FROM unidb_catalog.policies ORDER BY table_name, name`,
-    );
-    return {
-      supported: true,
-      policies: rows.map((r) => ({
-        name: r.name,
-        table: r.table_name,
-        op: r.operation,
-        usingExpr: r.using_expr,
-        withCheckExpr: r.with_check_expr,
-        enforced: !!r.enforced,
-      })),
-    };
-  } catch (e) {
-    if (CATALOG_ABSENT_CODES.has(e.code)) return { supported: false, policies: [] };
-    throw e;
+  const baseCols = 'name, table_name, operation, using_expr, with_check_expr, enforced';
+  const withTargetRoles = !targetRolesColumnKnownAbsent;
+
+  async function query(includeTargetRoles) {
+    const cols = includeTargetRoles ? `${baseCols}, target_roles` : baseCols;
+    return catalogRows(`SELECT ${cols} FROM unidb_catalog.policies ORDER BY table_name, name`);
   }
+
+  let rows;
+  let hasTargetRoles = withTargetRoles;
+  try {
+    rows = await query(withTargetRoles);
+  } catch (e) {
+    if (withTargetRoles && e.code === 'COLUMN_NOT_FOUND') {
+      // Confirmed absent this session — remember it so every subsequent
+      // load skips straight to the fallback query instead of re-probing.
+      targetRolesColumnKnownAbsent = true;
+      hasTargetRoles = false;
+      try {
+        rows = await query(false);
+      } catch (e2) {
+        if (CATALOG_ABSENT_CODES.has(e2.code)) return { supported: false, policies: [] };
+        throw e2;
+      }
+    } else if (CATALOG_ABSENT_CODES.has(e.code)) {
+      return { supported: false, policies: [] };
+    } else {
+      throw e;
+    }
+  }
+
+  return {
+    supported: true,
+    // Whether `target_roles` was actually readable this call — lets the UI
+    // show its "engine doesn't expose this yet" notice precisely, including
+    // when the policy list itself is empty (where per-row `null` gives no
+    // signal either way).
+    targetRolesSupported: hasTargetRoles,
+    policies: rows.map((r) => ({
+      name: r.name,
+      table: r.table_name,
+      op: r.operation,
+      usingExpr: r.using_expr,
+      withCheckExpr: r.with_check_expr,
+      enforced: !!r.enforced,
+      // `null` = engine doesn't expose this yet (show "(all roles)", not a
+      // false claim of zero scoping); `[]` = column present, genuinely unscoped.
+      targetRoles: hasTargetRoles ? normalizeTargetRoles(r.target_roles) : null,
+    })),
+  };
 }
 
 /**

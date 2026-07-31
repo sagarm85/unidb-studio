@@ -24,7 +24,8 @@
   let supported  = $state(true);
   let loading    = $state(true);
   let loadError  = $state(null);
-  let policies   = $state([]); // [{name, table, op, usingExpr, withCheckExpr, enforced}]
+  let policies   = $state([]); // [{name, table, op, usingExpr, withCheckExpr, enforced, targetRoles}]
+  let targetRolesSupported = $state(false);
   let roles      = $state([]); // custom (non-built-in) roles, for the TO picker
 
   let selectedTable = $state(null); // table name, or null = "all tables"
@@ -70,6 +71,7 @@
       const [out, snap] = await Promise.all([listPolicies(), getAuthzSnapshot()]);
       supported = out.supported;
       policies = out.policies;
+      targetRolesSupported = out.targetRolesSupported;
       roles = snap.supported ? snap.roles : [];
     } catch (e) {
       loadError = { code: e.code, message: e.message, status: e.status };
@@ -242,11 +244,14 @@
           <button onclick={openNew} disabled={tables.length === 0}>+ New policy</button>
         </div>
 
-        <p class="gap-note">
-          <strong>Note:</strong> <code>unidb_catalog.policies</code> doesn't expose a policy's
-          <code>TO &lt;role,…&gt;</code> target yet, so role-scoped policies you (or anyone) create
-          can't be shown below — only name/operation/USING/WITH CHECK/enforced are readable today.
-        </p>
+        {#if !targetRolesSupported}
+          <p class="gap-note">
+            <strong>Note:</strong> <code>unidb_catalog.policies</code> doesn't expose a policy's
+            <code>TO &lt;role,…&gt;</code> target on this server yet, so role-scoped policies you
+            (or anyone) create show as "(all roles)" below even if they're actually scoped — only
+            name/operation/USING/WITH CHECK/enforced are readable today.
+          </p>
+        {/if}
 
         {#if loading}
           <p class="muted">Loading…</p>
@@ -263,6 +268,18 @@
                   {#if !p.enforced}<span class="pc-warn" title="No users exist yet — RLS is inactive in open/bootstrap mode">not enforced (open mode)</span>{/if}
                   <span class="grow"></span>
                   <button class="del-btn" title="Drop policy" onclick={() => (dropTarget = { name: p.name, table: p.table })}>✕</button>
+                </div>
+                <div class="pc-expr">
+                  <span class="pc-label">TO</span>
+                  {#if p.targetRoles === null}
+                    <span class="pc-roles unknown">(all roles — unscoped or unknown, see note above)</span>
+                  {:else if p.targetRoles.length === 0}
+                    <span class="pc-roles">(all roles)</span>
+                  {:else}
+                    <span class="pc-roles">
+                      {#each p.targetRoles as r}<span class="role-badge">{r}</span>{/each}
+                    </span>
+                  {/if}
                 </div>
                 <div class="pc-expr"><span class="pc-label">USING</span><code>{p.usingExpr}</code></div>
                 {#if p.withCheckExpr}
@@ -495,6 +512,12 @@
   .del-btn:hover { color: var(--err-fg); }
   .pc-expr { display: flex; gap: 8px; font-size: 12px; align-items: baseline; }
   .pc-label { color: var(--muted); font-weight: 600; flex-shrink: 0; width: 84px; }
+  .pc-roles { display: flex; flex-wrap: wrap; gap: 4px; }
+  .pc-roles.unknown { color: var(--muted); font-style: italic; }
+  .role-badge {
+    font-family: var(--mono); font-size: 11px; background: var(--panel-alt);
+    border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px;
+  }
   .pc-expr code {
     font-family: var(--mono); background: var(--panel-alt); border-radius: 4px;
     padding: 2px 6px; word-break: break-word;
