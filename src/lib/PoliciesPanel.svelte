@@ -1,38 +1,49 @@
 <script>
-  import { listPolicies, previewAsRole, runSql } from './api.js';
+  import { listPolicies, previewAsRole, runSql, getAuthzSnapshot, RESERVED_ROLES } from './api.js';
   import ResultsGrid from './ResultsGrid.svelte';
 
   // Policies editor (Workstream G2 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
-  // What's REAL today (item 24, already shipped): CREATE/DROP POLICY, the
-  // USING/WITH CHECK predicate editors, `current_user` substitution, and
-  // `POST /auth/preview` ("preview as role"). All of that talks to the live
-  // engine — no mocking.
+  // Live over the engine's real contract (item 24 + item 122, merged via PR
+  // #222 on unidb main): CREATE/DROP POLICY including the optional
+  // `TO <role,...>` clause, the USING/WITH CHECK predicate editors with
+  // helper-insert buttons for `current_user` / `auth.uid()` /
+  // `auth.jwt() ->> 'claim'`, and `POST /auth/preview` ("preview as role").
   //
-  // What's SCAFFOLDED (blocked on engine item 122, RLS↔token binding — see
-  // ../unidb/docs/backlog/122_rls_token_binding.md): role-scoped policies
-  // (`... TO <role>`) and the `auth.uid()` / `auth.jwt()->>'claim'` helpers.
-  // The engine's CREATE POLICY grammar has no `TO <role>` clause yet, so that
-  // field stays disabled with an inline note rather than sending SQL the
-  // engine can't parse — never invent a working control for an absent route.
+  // KNOWN GAP (flagged, not worked around): `unidb_catalog.policies` does not
+  // expose a policy's `TO` target roles — verified against
+  // src/sql/information_schema.rs on unidb main, whose `policies` column list
+  // is `(name, table_name, operation, using_expr, with_check_expr, enforced)`
+  // only, even though `PolicyDef::target_roles` exists server-side. So this
+  // panel can author role-scoped policies but cannot show which existing
+  // policies are role-scoped, or to which roles — there is no client-side
+  // guess for that; a persistent note says so instead. File a backlog item
+  // upstream (unidb/docs/backlog/) to add the column.
   let { tables = [] } = $props();
 
   let supported  = $state(true);
   let loading    = $state(true);
   let loadError  = $state(null);
   let policies   = $state([]); // [{name, table, op, usingExpr, withCheckExpr, enforced}]
+  let roles      = $state([]); // custom (non-built-in) roles, for the TO picker
 
   let selectedTable = $state(null); // table name, or null = "all tables"
 
   // new-policy modal
-  let newOpen      = $state(false);
-  let newName       = $state('');
-  let newTable       = $state('');
-  let newOp          = $state('ALL');
-  let newUsing        = $state('');
-  let newWithCheck    = $state('');
-  let newBusy         = $state(false);
-  let newError         = $state(null);
+  let newOpen       = $state(false);
+  let newName        = $state('');
+  let newTable        = $state('');
+  let newOp            = $state('ALL');
+  let newRoles          = $state([]); // selected TO <role,...> targets; [] = no TO clause
+  let newUsing           = $state('');
+  let newWithCheck        = $state('');
+  let newBusy               = $state(false);
+  let newError               = $state(null);
+
+  // cursor tracking for the current_user/auth.uid()/auth.jwt() helper buttons
+  let usingEl     = $state(null);
+  let withCheckEl = $state(null);
+  let lastField   = $state('using'); // 'using' | 'withcheck'
 
   let dropTarget = $state(null); // { name, table } | null
   let dropBusy   = $state(false);
@@ -48,6 +59,7 @@
 
   const OPS = ['ALL', 'SELECT', 'INSERT', 'UPDATE', 'DELETE'];
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const roleTargetChoices = $derived([...RESERVED_ROLES, ...roles]);
 
   $effect(() => { load(); });
 
@@ -55,14 +67,46 @@
     loading = true;
     loadError = null;
     try {
-      const out = await listPolicies();
+      const [out, snap] = await Promise.all([listPolicies(), getAuthzSnapshot()]);
       supported = out.supported;
       policies = out.policies;
+      roles = snap.supported ? snap.roles : [];
     } catch (e) {
       loadError = { code: e.code, message: e.message, status: e.status };
     } finally {
       loading = false;
     }
+  }
+
+  function toggleNewRole(role) {
+    newRoles = newRoles.includes(role) ? newRoles.filter((r) => r !== role) : [...newRoles, role];
+  }
+
+  // Insert `snippet` at the cursor of whichever textarea (USING/WITH CHECK)
+  // was last focused, then select `snippet.slice(selStart, selEnd)` so a
+  // placeholder like the 'claim' in auth.jwt() ->> 'claim' can be typed over
+  // immediately.
+  function insertSnippet(snippet, selStart = snippet.length, selEnd = snippet.length) {
+    const usingField = lastField === 'using';
+    const el = usingField ? usingEl : withCheckEl;
+    const cur = usingField ? newUsing : newWithCheck;
+    const start = el?.selectionStart ?? cur.length;
+    const end = el?.selectionEnd ?? cur.length;
+    const next = cur.slice(0, start) + snippet + cur.slice(end);
+    if (usingField) newUsing = next; else newWithCheck = next;
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(start + selStart, start + selEnd);
+    });
+  }
+  function insertCurrentUser() { insertSnippet('current_user'); }
+  function insertAuthUid() { insertSnippet('auth.uid()'); }
+  function insertAuthClaim() {
+    // Always parenthesised — REST_API.md: "->> binds looser than =", so
+    // `col = auth.jwt() ->> 'x'` parses wrong; `col = (auth.jwt() ->> 'x')` is required.
+    const snippet = `(auth.jwt() ->> 'claim')`;
+    const idx = snippet.indexOf('claim');
+    insertSnippet(snippet, idx, idx + 'claim'.length);
   }
 
   const visiblePolicies = $derived(
@@ -79,8 +123,10 @@
     newName = '';
     newTable = selectedTable ?? tables[0]?.name ?? '';
     newOp = 'ALL';
+    newRoles = [];
     newUsing = '';
     newWithCheck = '';
+    lastField = 'using';
     newOpen = true;
   }
 
@@ -92,7 +138,9 @@
     if (!newUsing.trim()) { newError = 'USING predicate is required.'; return; }
     newBusy = true;
     try {
-      let sql = `CREATE POLICY ${name} ON ${newTable} FOR ${newOp} USING (${newUsing.trim()})`;
+      let sql = `CREATE POLICY ${name} ON ${newTable} FOR ${newOp}`;
+      if (newRoles.length) sql += ` TO ${newRoles.join(', ')}`;
+      sql += ` USING (${newUsing.trim()})`;
       if (newWithCheck.trim()) sql += ` WITH CHECK (${newWithCheck.trim()})`;
       await runSql(sql);
       newOpen = false;
@@ -194,6 +242,12 @@
           <button onclick={openNew} disabled={tables.length === 0}>+ New policy</button>
         </div>
 
+        <p class="gap-note">
+          <strong>Note:</strong> <code>unidb_catalog.policies</code> doesn't expose a policy's
+          <code>TO &lt;role,…&gt;</code> target yet, so role-scoped policies you (or anyone) create
+          can't be shown below — only name/operation/USING/WITH CHECK/enforced are readable today.
+        </p>
+
         {#if loading}
           <p class="muted">Loading…</p>
         {:else if visiblePolicies.length === 0}
@@ -243,24 +297,58 @@
           </select>
         </label>
         <label class="field">
-          <span class="flabel">Applies to</span>
+          <span class="flabel">Operation</span>
           <select bind:value={newOp}>
             {#each OPS as op}<option value={op}>{op}</option>{/each}
           </select>
         </label>
-        <label class="field">
-          <span class="flabel">USING (row filter)</span>
-          <textarea bind:value={newUsing} rows="2" placeholder="owner = current_user" spellcheck="false"></textarea>
-        </label>
-        <label class="field">
-          <span class="flabel">WITH CHECK (optional — write-side check; defaults to USING)</span>
-          <textarea bind:value={newWithCheck} rows="2" placeholder="" spellcheck="false"></textarea>
-        </label>
+        <div class="field">
+          <span class="flabel">Applies to roles (optional — no selection = every caller)</span>
+          {#if roleTargetChoices.length === 0}
+            <p class="muted small">No roles yet — create one in the Roles tab to scope this policy.</p>
+          {:else}
+            <div class="role-chips">
+              {#each roleTargetChoices as r}
+                <button
+                  type="button"
+                  class="role-chip"
+                  class:selected={newRoles.includes(r)}
+                  onclick={() => toggleNewRole(r)}
+                >{r}</button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+        <div class="field">
+          <div class="flabel-row">
+            <span class="flabel">USING (row filter)</span>
+            <span class="helper-btns">
+              <button type="button" onclick={insertCurrentUser}>current_user</button>
+              <button type="button" onclick={insertAuthUid}>auth.uid()</button>
+              <button type="button" onclick={insertAuthClaim}>auth.jwt()-&gt;&gt;'claim'</button>
+            </span>
+          </div>
+          <textarea bind:this={usingEl} bind:value={newUsing} rows="2" placeholder="owner = current_user"
+            spellcheck="false" onfocus={() => (lastField = 'using')}></textarea>
+        </div>
+        <div class="field">
+          <div class="flabel-row">
+            <span class="flabel">WITH CHECK (optional — write-side check; defaults to USING)</span>
+            <span class="helper-btns">
+              <button type="button" onclick={insertCurrentUser}>current_user</button>
+              <button type="button" onclick={insertAuthUid}>auth.uid()</button>
+              <button type="button" onclick={insertAuthClaim}>auth.jwt()-&gt;&gt;'claim'</button>
+            </span>
+          </div>
+          <textarea bind:this={withCheckEl} bind:value={newWithCheck} rows="2" placeholder=""
+            spellcheck="false" onfocus={() => (lastField = 'withcheck')}></textarea>
+        </div>
         <p class="hint">
-          Insert <code>current_user</code> to reference the caller's identity (bare keyword, no
-          parentheses). Role-scoped policies (<code>TO &lt;role&gt;</code>) and
-          <code>auth.uid()</code> / <code>auth.jwt()</code> land with engine item 122 — not yet
-          available.
+          <code>current_user</code> is a bare keyword (no parentheses). <code>auth.uid()</code> and
+          <code>auth.jwt() ->> 'claim'</code> resolve from the caller's verified token and fail
+          closed to <code>NULL</code> when absent — a policy never widens because of a missing
+          claim. <code>-&gt;&gt;</code> binds looser than <code>=</code>, so the claim helper always
+          inserts parentheses: <code>(auth.jwt() -&gt;&gt; 'claim')</code>.
         </p>
         {#if newError}<p class="err">{newError}</p>{/if}
       </div>
@@ -379,6 +467,13 @@
   .muted { color: var(--muted); }
   .err { color: var(--err-fg); }
 
+  .gap-note {
+    margin: 0; font-size: 11px; color: var(--muted); line-height: 1.5;
+    background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px;
+  }
+  .gap-note code { font-family: var(--mono); background: var(--panel); border-radius: 3px; padding: 0 3px; }
+
   .policy-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
   .policy-card {
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
@@ -432,6 +527,23 @@
   }
   .field textarea { resize: vertical; }
   .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+
+  .role-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .role-chip {
+    font-family: var(--mono); font-size: 11px; padding: 3px 9px; border-radius: 12px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer;
+  }
+  .role-chip:hover { border-color: var(--accent); }
+  .role-chip.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .flabel-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .helper-btns { display: flex; gap: 4px; }
+  .helper-btns button {
+    font-family: var(--mono); font-size: 10px; padding: 2px 6px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--panel-alt); color: var(--muted); cursor: pointer;
+  }
+  .helper-btns button:hover { color: var(--accent); border-color: var(--accent); }
+
   .hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 0; }
   .hint code { font-family: var(--mono); background: var(--panel-alt); border-radius: 4px; padding: 1px 4px; }
   .del-msg { margin: 0; font-size: 13px; line-height: 1.6; }

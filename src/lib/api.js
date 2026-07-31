@@ -309,6 +309,20 @@ export async function getSchema() {
   return { tables, relationships, supported: true };
 }
 
+// ---- authorization: roles, users, grants (item 24 + item 122 B3) --------
+// The three built-in roles (item 122, B3 — Supabase convention). Verified
+// against unidb's src/authz/mod.rs::RESERVED_ROLES: `anon` (no verified JWT
+// subject), `authenticated` (any verified subject, plus granted roles), and
+// `service_role` (token claims carry `"role":"service_role"` — bypasses RLS
+// like a superuser, on the audited path). They are assigned automatically by
+// the engine and are NEVER rows in `unidb_catalog.roles` — `CREATE ROLE`/
+// `DROP ROLE` reject these names, and `GRANT ... TO <reserved>` /
+// `GRANT <reserved> TO <user>` both fail too (`require_grantee` only accepts
+// a known user or a row in `unidb_catalog.roles`). They ARE valid as a
+// `CREATE POLICY ... TO <role>` target. This constant is therefore real,
+// documented engine behavior — not a fabricated value.
+export const RESERVED_ROLES = ['anon', 'authenticated', 'service_role'];
+
 // ---- authorization: roles, users, grants (item 24) -----------------------
 /**
  * Snapshot of the authorization catalog backing the Roles/Grants panel (G3):
@@ -454,10 +468,9 @@ export function isSingleSelect(sql) {
 
 // ---- auth discovery / identity (item 100) --------------------------------
 /**
- * GET /auth/meta — public discovery endpoint. Already shipped (item 100);
- * used by the Auth panel (G1) to show real server auth configuration while
- * the credentialed-login endpoints (engine item 121) don't exist yet.
- * Degrades to `{ supported: false }` on a very old pre-item-100 server.
+ * GET /auth/meta — public discovery endpoint (item 100), now also reporting
+ * `signup_enabled` (item 121 A3). Degrades to `{ supported: false }` on a
+ * very old pre-item-100 server.
  */
 export async function getAuthMeta() {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
@@ -488,6 +501,69 @@ export async function getWhoami() {
   if (res.status === 404) return { supported: false };
   if (!res.ok) throw await toApiError(res);
   return { supported: true, ...(await res.json()) };
+}
+
+// ---- credentialed auth flows (item 121, A1–A4; merged via PR #222) -------
+// POST /auth/{login,signup,refresh} all return the same shape:
+// { token, access_token, refresh_token, expires_in }. `token` is a
+// deprecated alias for `access_token`, kept only for pre-A4 clients — we
+// read `access_token`/`refresh_token` directly. The refresh token is opaque
+// (NOT a JWT); per REST_API.md it is meant to be stored client-side and
+// exchanged at /auth/refresh / revoked at /auth/logout, so callers keep it
+// in memory (component state) — this module never persists it.
+async function authFlowPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { accessToken: j.access_token ?? j.token, refreshToken: j.refresh_token, expiresIn: j.expires_in };
+}
+
+/** POST /auth/login — password login (item 121 A1/A2). */
+export async function authLogin(username, password) {
+  return authFlowPost('/auth/login', { username, password });
+}
+
+/**
+ * POST /auth/signup — self-service signup (item 121 A3). 404s when the
+ * server hasn't set UNIDB_ALLOW_SIGNUP=1 (see GET /auth/meta's
+ * `signup_enabled`, which the panel checks before offering this).
+ */
+export async function authSignup(username, password) {
+  return authFlowPost('/auth/signup', { username, password });
+}
+
+/** POST /auth/refresh — exchange a refresh token for a new access+refresh pair (item 121 A4). */
+export async function authRefresh(refreshToken) {
+  return authFlowPost('/auth/refresh', { refresh_token: refreshToken });
+}
+
+/**
+ * POST /auth/logout — revoke a refresh-token session (item 121 A4).
+ * Idempotent: 204 even for an unknown/already-revoked token.
+ */
+export async function authLogout(refreshToken) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
 }
 
 // ---- observability (item 21) --------------------------------------------

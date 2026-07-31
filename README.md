@@ -37,23 +37,29 @@ Five panels, all over `POST /sql` and `GET /tables`:
 
 ## Authorization panels (Roles, Policies, Authentication)
 
-Three more panels cover Supabase-parity auth/authorization (see
+Three more panels cover Supabase-parity auth/authorization, all live against
+unidb main's merged auth contract (PR #222 — password login/signup/refresh/
+logout, `auth.uid()`/`auth.jwt()`, role-scoped policies, built-in roles). See
 [`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
-full plan and status):
+full plan, status, and the two known engine gaps it flags (existing-user
+password reset; `unidb_catalog.policies` not exposing a policy's `TO` roles).
 
-- **Roles** — users + roles list, transitive role-membership editor, and a
-  per-table GRANT/REVOKE checkbox matrix. Fully live over the item-24 RBAC
-  engine (`unidb_catalog.{users,roles,grants,role_members}` + auth DDL).
-- **Policies** — RLS policy list/create/drop (`CREATE POLICY`/`DROP POLICY`,
-  `USING`/`WITH CHECK`, `current_user`) plus a **Preview as role** tool
-  (`POST /auth/preview`) to see exactly which rows a user's policies let
-  through. All live. Role-scoped policies (`TO <role>`) and `auth.uid()`/
-  `auth.jwt()` helpers are shown as explicitly unavailable until engine item
-  122 ships — the shipped `CREATE POLICY` grammar has no `TO` clause yet.
-- **Authentication** — a real-data status panel (`GET /auth/meta` + `GET
-  /auth/whoami`, both already shipped). Credentialed signup/login/session
-  actions depend on engine item 121 (not started) and are shown as explicit
-  "not available yet" cards, never fabricated data or a dead-looking form.
+- **Roles** — users + roles list, transitive role-membership editor, a
+  per-table GRANT/REVOKE checkbox matrix, and the three built-in roles
+  (`anon`/`authenticated`/`service_role`) shown read-only. Live over the
+  item-24 RBAC engine (`unidb_catalog.{users,roles,grants,role_members}` +
+  auth DDL).
+- **Policies** — `CREATE POLICY … FOR <op> [TO <role,…>] USING (…) [WITH
+  CHECK (…)]` / `DROP POLICY`, with a role-target chip picker and
+  helper-insert buttons for `current_user`, `auth.uid()`, and
+  `auth.jwt() ->> 'claim'` (always parenthesised, per the documented `->>`
+  precedence caveat), plus **Preview as role** (`POST /auth/preview`).
+- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami`, a users
+  list with create-with-password/delete (`CREATE USER … PASSWORD '…'` /
+  `DROP USER`), and a flow tester over the real
+  `POST /auth/{login,signup,refresh,logout}` routes — tokens shown are kept
+  in-memory only, never persisted or swapped into the Studio's own admin
+  session token.
 
 ## Configure it (point it at a server)
 

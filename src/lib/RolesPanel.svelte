@@ -1,5 +1,5 @@
 <script>
-  import { getAuthzSnapshot, runSql } from './api.js';
+  import { getAuthzSnapshot, runSql, RESERVED_ROLES } from './api.js';
 
   // Roles / grants UI (Workstream G3 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   // Pure UI over the item-24 RBAC engine, which already ships: users, roles,
@@ -10,7 +10,21 @@
   //
   // That DDL is parsed by whitespace-splitting (not the SQL tokenizer), so
   // names may not contain whitespace; IDENT_RE enforces that client-side.
+  //
+  // Built-in roles (item 122, B3): `anon`/`authenticated`/`service_role` are
+  // never rows in `unidb_catalog.roles` — they're assigned automatically by
+  // the engine from the caller's verified token. Shown read-only below;
+  // GRANT/membership editing is disabled for them because the engine's own
+  // `require_grantee` check rejects them as a GRANT/role-membership target
+  // (verified against src/authz/mod.rs) — they're only addressable from a
+  // policy's `TO` clause (Policies tab).
   let { tables = [] } = $props();
+
+  const BUILTIN_DESCRIPTIONS = {
+    anon: 'Assigned when the caller has no verified JWT subject (no token, or a token with no `sub`).',
+    authenticated: 'Assigned to any caller with a verified JWT subject, alongside their own granted roles.',
+    service_role: 'Assigned when the token’s verified claims carry `"role": "service_role"`. Bypasses RLS like a superuser, but stays on the audited path (distinct from the implicit-superuser bypass).',
+  };
 
   const PRIVS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'];
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -57,7 +71,8 @@
       if (selected) {
         const stillThere =
           (selected.type === 'user' && users.some((u) => u.name === selected.name)) ||
-          (selected.type === 'role' && roles.includes(selected.name));
+          (selected.type === 'role' && roles.includes(selected.name)) ||
+          selected.type === 'builtin'; // built-ins are constant, never removed by a reload
         if (!stillThere) selected = null;
       }
     } catch (e) {
@@ -252,6 +267,20 @@
             </ul>
           {/if}
         {/if}
+
+        <div class="sidebar-head">
+          <span class="sidebar-title">Built-in roles</span>
+        </div>
+        <ul class="entity-list">
+          {#each RESERVED_ROLES as r}
+            <li class:active={selected?.type === 'builtin' && selected.name === r}>
+              <button class="entity-btn" onclick={() => select('builtin', r)}>
+                <span class="ename">{r}</span>
+                <span class="pill builtin">read-only</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
       </aside>
 
       <!-- ── Detail ── -->
@@ -259,6 +288,27 @@
         {#if !selected}
           <div class="empty-state">
             <p>Select a user or role to manage its memberships and table grants.</p>
+          </div>
+        {:else if selected.type === 'builtin'}
+          <div class="detail-head">
+            <span class="kind-badge builtin">Built-in role</span>
+            <strong class="detail-name">{selected.name}</strong>
+          </div>
+          <div class="detail-body">
+            <section class="block">
+              <p>{BUILTIN_DESCRIPTIONS[selected.name]}</p>
+            </section>
+            <section class="block builtin-note">
+              <h4>Why there's no membership/grants editor here</h4>
+              <p class="muted small">
+                <code>anon</code>/<code>authenticated</code>/<code>service_role</code> are never
+                rows in <code>unidb_catalog.roles</code> — the engine assigns them automatically
+                from the caller's verified token, and its own <code>require_grantee</code> check
+                rejects them as a target of <code>GRANT</code> or role membership. They're only
+                addressable in a policy's <code>TO</code> clause — see the
+                <strong>Policies</strong> tab to scope a policy to one of them.
+              </p>
+            </section>
           </div>
         {:else}
           {@const isUser = selected.type === 'user'}
@@ -475,6 +525,7 @@
     border-radius: 3px; padding: 1px 4px; flex-shrink: 0;
   }
   .pill.super { background: rgba(217,119,6,0.15); color: #b45309; }
+  .pill.builtin { background: var(--panel-alt); color: var(--muted); border: 1px solid var(--border); }
   .del-btn {
     background: none; border: none; color: var(--muted); cursor: pointer;
     font-size: 12px; padding: 2px 4px; opacity: 0; flex-shrink: 0;
@@ -494,6 +545,10 @@
     color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
     border-radius: 4px; padding: 2px 6px;
   }
+  .kind-badge.builtin { color: var(--muted); background: var(--panel-alt); }
+  .builtin-note { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .builtin-note h4 { margin-top: 0; }
+  .builtin-note code { font-family: var(--mono); background: var(--panel); border-radius: 4px; padding: 1px 4px; }
   .detail-name { font-size: 16px; font-family: var(--mono); }
 
   .detail-body { display: flex; flex-direction: column; gap: 20px; max-width: 640px; }
