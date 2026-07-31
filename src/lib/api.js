@@ -309,6 +309,235 @@ export async function getSchema() {
   return { tables, relationships, supported: true };
 }
 
+// ---- auto REST API (item 123, C1) — API-docs panel (G4) -------------------
+// GET/POST/PATCH/DELETE /rest/v1/<table> + GET /rest/v1 (catalog-derived
+// OpenAPI 3 doc). Verified against src/server/rest_resource.rs on unidb main
+// (PR #223) rather than docs/REST_API.md, which does not yet document this
+// route at all despite the code shipping — a real doc-staleness gap, flagged
+// in AUTH_POLICY_PANELS_PLAN.md rather than guessed around. Confirmed from
+// source, not assumed:
+//   - GET /rest/v1 (the OpenAPI doc) sits under the same require_jwt layer
+//     as every other data-plane route — NOT public — so it needs the bearer
+//     token like any other authenticated fetch here.
+//   - Every response reuses POST /sql's ExecResult JSON shape, not a bare
+//     PostgREST-style array of row objects: GET -> {type:'rows', columns,
+//     rows}; POST -> {type:'inserted', count}; PATCH -> {type:'updated',
+//     count}; DELETE -> {type:'deleted', count}.
+//   - Filter operators are exactly eq/neq/gt/gte/lt/lte/like/ilike/in/is
+//     (fixed allow-list, rest_resource.rs::parse_op) — `select=`, `order=
+//     col.asc|col.desc` (comma-separated), `limit=`, `offset=`.
+
+/**
+ * GET /rest/v1 — catalog-derived OpenAPI 3 document (item 123, C3).
+ * Degrades to `{ supported: false, doc: null }` on a pre-item-123 server
+ * (404) rather than throwing, so the panel can show a clear empty state.
+ */
+export async function getRestOpenApi() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/rest/v1`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, doc: null };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, doc: await res.json() };
+}
+
+/**
+ * GET /rest/v1/<table>?select=...&<filters>&order=...&limit=...&offset=...
+ * `filterParams` is an array of `[column, "<op>.<value>"]` pairs — already
+ * formatted by the caller (the op/value encoding is filter-shape-specific,
+ * e.g. `in` wraps its value in parens, `is` takes a bare null/true/false —
+ * kept in the component next to the filter-builder UI, mirroring how
+ * RolesPanel/PoliciesPanel build their own SQL text next to their forms).
+ *
+ * @param {string} table
+ * @param {{select?:string, filterParams?:Array<[string,string]>, order?:string, limit?:number, offset?:number}} [opts]
+ * @returns {Promise<{result:object, url:string}>} `result` is the raw
+ *   `{type:'rows', columns, rows}` body — pass straight to ResultsGrid.
+ */
+export async function restGet(table, opts = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams();
+  if (opts.select) qs.set('select', opts.select);
+  for (const [col, opValue] of opts.filterParams ?? []) qs.append(col, opValue);
+  if (opts.order) qs.set('order', opts.order);
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.offset != null) qs.set('offset', String(opts.offset));
+  const query = qs.toString();
+  const url = `${BASE_URL}/rest/v1/${encodeURIComponent(table)}${query ? `?${query}` : ''}`;
+
+  const start = performance.now();
+  let res;
+  try {
+    res = await fetch(url, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  const roundTripMs = performance.now() - start;
+  if (!res.ok) throw await toApiError(res);
+  return { result: await res.json(), url, roundTripMs };
+}
+
+// ---- authorization: roles, users, grants (item 24 + item 122 B3) --------
+// The three built-in roles (item 122, B3 — Supabase convention). Verified
+// against unidb's src/authz/mod.rs::RESERVED_ROLES: `anon` (no verified JWT
+// subject), `authenticated` (any verified subject, plus granted roles), and
+// `service_role` (token claims carry `"role":"service_role"` — bypasses RLS
+// like a superuser, on the audited path). They are assigned automatically by
+// the engine and are NEVER rows in `unidb_catalog.roles` — `CREATE ROLE`/
+// `DROP ROLE` reject these names, and `GRANT ... TO <reserved>` /
+// `GRANT <reserved> TO <user>` both fail too (`require_grantee` only accepts
+// a known user or a row in `unidb_catalog.roles`). They ARE valid as a
+// `CREATE POLICY ... TO <role>` target. This constant is therefore real,
+// documented engine behavior — not a fabricated value.
+export const RESERVED_ROLES = ['anon', 'authenticated', 'service_role'];
+
+// ---- authorization: roles, users, grants (item 24) -----------------------
+/**
+ * Snapshot of the authorization catalog backing the Roles/Grants panel (G3):
+ * users, roles, table-level grants, and role memberships — the four
+ * `unidb_catalog.*` virtual relations item 24 ships (see
+ * ../unidb/docs/REST_API.md#authorization--roles-grants-and-rls-item-24).
+ * Degrades to `{ supported: false }` on a pre-item-24 server (the relations
+ * don't exist yet), same pattern as `getSchema`.
+ *
+ * @returns {Promise<{supported:boolean, users:Array<{name,isSuperuser}>,
+ *   roles:Array<string>, grants:Array<{grantee,table,op}>,
+ *   roleMembers:Array<{role,member}>}>}
+ */
+export async function getAuthzSnapshot() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+
+  let userRows;
+  try {
+    userRows = await catalogRows('SELECT name, is_superuser FROM unidb_catalog.users ORDER BY name');
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) {
+      return { supported: false, users: [], roles: [], grants: [], roleMembers: [] };
+    }
+    throw e;
+  }
+
+  const [roleRows, grantRows, memberRows] = await Promise.all([
+    catalogRows('SELECT name FROM unidb_catalog.roles ORDER BY name'),
+    // `role` is the grants relation's column name for the grantee (user or role).
+    catalogRows('SELECT role, table_name, operation FROM unidb_catalog.grants'),
+    catalogRows('SELECT role, member FROM unidb_catalog.role_members'),
+  ]);
+
+  return {
+    supported: true,
+    users: userRows.map((u) => ({ name: u.name, isSuperuser: !!u.is_superuser })),
+    roles: roleRows.map((r) => r.name),
+    grants: grantRows.map((g) => ({ grantee: g.role, table: g.table_name, op: g.operation })),
+    roleMembers: memberRows.map((m) => ({ role: m.role, member: m.member })),
+  };
+}
+
+// ---- row-level security policies (item 24 Z1/R-a; G2 Policies editor) ----
+/**
+ * `unidb_catalog.policies` — every named RLS policy across every table.
+ * Columns: name, table_name, operation, using_expr, with_check_expr, enforced.
+ * Degrades to `{ supported: false }` on a pre-item-24 server.
+ */
+// `target_roles` on `unidb_catalog.policies` is feature-detected, not
+// assumed: as of this session the column doesn't exist yet (verified against
+// src/sql/information_schema.rs on unidb main — the relation's column list
+// is still `(name, table_name, operation, using_expr, with_check_expr,
+// enforced)`), but the engine owner is adding it imminently so the panel can
+// show which existing policies are `TO <role,…>` scoped. `null` here means
+// "column absent — caller must fall back to an unscoped display", tracked
+// once per session by the caller rather than re-probed on every load.
+let targetRolesColumnKnownAbsent = false;
+
+function normalizeTargetRoles(raw) {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) return raw;
+  return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+export async function listPolicies() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const baseCols = 'name, table_name, operation, using_expr, with_check_expr, enforced';
+  const withTargetRoles = !targetRolesColumnKnownAbsent;
+
+  async function query(includeTargetRoles) {
+    const cols = includeTargetRoles ? `${baseCols}, target_roles` : baseCols;
+    return catalogRows(`SELECT ${cols} FROM unidb_catalog.policies ORDER BY table_name, name`);
+  }
+
+  let rows;
+  let hasTargetRoles = withTargetRoles;
+  try {
+    rows = await query(withTargetRoles);
+  } catch (e) {
+    if (withTargetRoles && e.code === 'COLUMN_NOT_FOUND') {
+      // Confirmed absent this session — remember it so every subsequent
+      // load skips straight to the fallback query instead of re-probing.
+      targetRolesColumnKnownAbsent = true;
+      hasTargetRoles = false;
+      try {
+        rows = await query(false);
+      } catch (e2) {
+        if (CATALOG_ABSENT_CODES.has(e2.code)) return { supported: false, policies: [] };
+        throw e2;
+      }
+    } else if (CATALOG_ABSENT_CODES.has(e.code)) {
+      return { supported: false, policies: [] };
+    } else {
+      throw e;
+    }
+  }
+
+  return {
+    supported: true,
+    // Whether `target_roles` was actually readable this call — lets the UI
+    // show its "engine doesn't expose this yet" notice precisely, including
+    // when the policy list itself is empty (where per-row `null` gives no
+    // signal either way).
+    targetRolesSupported: hasTargetRoles,
+    policies: rows.map((r) => ({
+      name: r.name,
+      table: r.table_name,
+      op: r.operation,
+      usingExpr: r.using_expr,
+      withCheckExpr: r.with_check_expr,
+      enforced: !!r.enforced,
+      // `null` = engine doesn't expose this yet (show "(all roles)", not a
+      // false claim of zero scoping); `[]` = column present, genuinely unscoped.
+      targetRoles: hasTargetRoles ? normalizeTargetRoles(r.target_roles) : null,
+    })),
+  };
+}
+
+/**
+ * POST /auth/preview (item-24 Z6) — run `sql` as though authenticated as
+ * `asRole`, so an admin can see exactly which rows that role's RLS policies
+ * let through. Superuser-only on the server; a non-superuser caller gets a
+ * normal ApiError the UI can surface.
+ *
+ * @returns {Promise<{columns:Array<string>, rows:Array<Array<*>>}>}
+ */
+export async function previewAsRole(asRole, sql) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/preview`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ as_role: asRole, sql }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { columns: j.columns ?? [], rows: j.rows ?? [] };
+}
+
 // EXPLAIN ANALYZE returns a `rows` result: one single-string column per plan
 // line, with a trailing `execution_time_ms=<n>` line under ANALYZE. Pull that
 // number out — it's the true SERVER execution time, distinct from round-trip.
@@ -353,6 +582,106 @@ export function isSingleSelect(sql) {
   const trimmed = sql.trim().replace(/;\s*$/, '');
   if (trimmed.includes(';')) return false; // multiple statements
   return /^(select|with)\b/i.test(trimmed);
+}
+
+// ---- auth discovery / identity (item 100) --------------------------------
+/**
+ * GET /auth/meta — public discovery endpoint (item 100), now also reporting
+ * `signup_enabled` (item 121 A3). Degrades to `{ supported: false }` on a
+ * very old pre-item-100 server.
+ */
+export async function getAuthMeta() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/meta`);
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, ...(await res.json()) };
+}
+
+/**
+ * GET /auth/whoami — the caller's own identity/privileges (item 100).
+ * Requires a valid JWT; degrades to `{ supported: false }` on a server that
+ * predates the route.
+ */
+export async function getWhoami() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/whoami`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, ...(await res.json()) };
+}
+
+// ---- credentialed auth flows (item 121, A1–A4; merged via PR #222) -------
+// POST /auth/{login,signup,refresh} all return the same shape:
+// { token, access_token, refresh_token, expires_in }. `token` is a
+// deprecated alias for `access_token`, kept only for pre-A4 clients — we
+// read `access_token`/`refresh_token` directly. The refresh token is opaque
+// (NOT a JWT); per REST_API.md it is meant to be stored client-side and
+// exchanged at /auth/refresh / revoked at /auth/logout, so callers keep it
+// in memory (component state) — this module never persists it.
+async function authFlowPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { accessToken: j.access_token ?? j.token, refreshToken: j.refresh_token, expiresIn: j.expires_in };
+}
+
+/** POST /auth/login — password login (item 121 A1/A2). */
+export async function authLogin(username, password) {
+  return authFlowPost('/auth/login', { username, password });
+}
+
+/**
+ * POST /auth/signup — self-service signup (item 121 A3). 404s when the
+ * server hasn't set UNIDB_ALLOW_SIGNUP=1 (see GET /auth/meta's
+ * `signup_enabled`, which the panel checks before offering this).
+ */
+export async function authSignup(username, password) {
+  return authFlowPost('/auth/signup', { username, password });
+}
+
+/** POST /auth/refresh — exchange a refresh token for a new access+refresh pair (item 121 A4). */
+export async function authRefresh(refreshToken) {
+  return authFlowPost('/auth/refresh', { refresh_token: refreshToken });
+}
+
+/**
+ * POST /auth/logout — revoke a refresh-token session (item 121 A4).
+ * Idempotent: 204 even for an unknown/already-revoked token.
+ */
+export async function authLogout(refreshToken) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
 }
 
 // ---- observability (item 21) --------------------------------------------

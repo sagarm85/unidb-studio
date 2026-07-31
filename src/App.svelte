@@ -13,11 +13,15 @@
   import EventsPanel from './lib/EventsPanel.svelte';
   import StoragePanel from './lib/StoragePanel.svelte';
   import ComparePanel from './lib/ComparePanel.svelte';
+  import RolesPanel from './lib/RolesPanel.svelte';
+  import PoliciesPanel from './lib/PoliciesPanel.svelte';
+  import AuthPanel from './lib/AuthPanel.svelte';
+  import ApiDocsPanel from './lib/ApiDocsPanel.svelte';
   import { runSql } from './lib/api.js';
   import { quoteIdent } from './lib/format.js';
 
-  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare'
-  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare']);
+  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth' | 'apidocs'
+  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth','apidocs']);
   const _urlTab = new URLSearchParams(window.location.search).get('tab') ?? '';
   let tab = $state(VALID_TABS.has(_urlTab) ? _urlTab : 'sql');
   let selectedTable = $state(null);
@@ -197,6 +201,35 @@
         </svg>
         Compare
       </button>
+      <button class:active={tab === 'roles'} onclick={() => (tab = 'roles')} title="Roles &amp; Grants">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M10 2l7 3v5c0 4.5-3 8-7 9-4-1-7-4.5-7-9V5l7-3z"/>
+        </svg>
+        Roles
+      </button>
+      <button class:active={tab === 'policies'} onclick={() => (tab = 'policies')} title="Policies">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <rect x="3" y="9" width="14" height="9" rx="1.5"/>
+          <path d="M6.5 9V6a3.5 3.5 0 0 1 7 0v3"/>
+        </svg>
+        Policies
+      </button>
+      <button class:active={tab === 'auth'} onclick={() => (tab = 'auth')} title="Authentication">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="10" cy="7" r="3.2"/>
+          <path d="M3.5 17c1-3.5 4-5 6.5-5s5.5 1.5 6.5 5"/>
+        </svg>
+        Authentication
+      </button>
+      <button class:active={tab === 'apidocs'} onclick={() => (tab = 'apidocs')} title="API Docs">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M6 3h8l3 3v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+          <path d="M14 3v3h3"/>
+          <line x1="7.5" y1="10" x2="12.5" y2="10"/>
+          <line x1="7.5" y1="13" x2="12.5" y2="13"/>
+        </svg>
+        API Docs
+      </button>
     </div>
 
     <div class="nav-bottom">
@@ -235,7 +268,7 @@
           <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
         </div>
       {/if}
-      <section class="panel" class:no-pad={tab === 'storage'}>
+      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies' || tab === 'apidocs'}>
         {#if tab === 'sql'}
           <SqlEditor bind:sql bind:paramsText />
         {:else if tab === 'records'}
@@ -266,6 +299,14 @@
           <LogsPanel />
         {:else if tab === 'compare'}
           <ComparePanel />
+        {:else if tab === 'roles'}
+          <RolesPanel {tables} />
+        {:else if tab === 'policies'}
+          <PoliciesPanel {tables} />
+        {:else if tab === 'auth'}
+          <AuthPanel />
+        {:else if tab === 'apidocs'}
+          <ApiDocsPanel />
         {/if}
       </section>
     </main>
