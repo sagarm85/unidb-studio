@@ -309,6 +309,103 @@ export async function getSchema() {
   return { tables, relationships, supported: true };
 }
 
+// ---- authorization: roles, users, grants (item 24) -----------------------
+/**
+ * Snapshot of the authorization catalog backing the Roles/Grants panel (G3):
+ * users, roles, table-level grants, and role memberships — the four
+ * `unidb_catalog.*` virtual relations item 24 ships (see
+ * ../unidb/docs/REST_API.md#authorization--roles-grants-and-rls-item-24).
+ * Degrades to `{ supported: false }` on a pre-item-24 server (the relations
+ * don't exist yet), same pattern as `getSchema`.
+ *
+ * @returns {Promise<{supported:boolean, users:Array<{name,isSuperuser}>,
+ *   roles:Array<string>, grants:Array<{grantee,table,op}>,
+ *   roleMembers:Array<{role,member}>}>}
+ */
+export async function getAuthzSnapshot() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+
+  let userRows;
+  try {
+    userRows = await catalogRows('SELECT name, is_superuser FROM unidb_catalog.users ORDER BY name');
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) {
+      return { supported: false, users: [], roles: [], grants: [], roleMembers: [] };
+    }
+    throw e;
+  }
+
+  const [roleRows, grantRows, memberRows] = await Promise.all([
+    catalogRows('SELECT name FROM unidb_catalog.roles ORDER BY name'),
+    // `role` is the grants relation's column name for the grantee (user or role).
+    catalogRows('SELECT role, table_name, operation FROM unidb_catalog.grants'),
+    catalogRows('SELECT role, member FROM unidb_catalog.role_members'),
+  ]);
+
+  return {
+    supported: true,
+    users: userRows.map((u) => ({ name: u.name, isSuperuser: !!u.is_superuser })),
+    roles: roleRows.map((r) => r.name),
+    grants: grantRows.map((g) => ({ grantee: g.role, table: g.table_name, op: g.operation })),
+    roleMembers: memberRows.map((m) => ({ role: m.role, member: m.member })),
+  };
+}
+
+// ---- row-level security policies (item 24 Z1/R-a; G2 Policies editor) ----
+/**
+ * `unidb_catalog.policies` — every named RLS policy across every table.
+ * Columns: name, table_name, operation, using_expr, with_check_expr, enforced.
+ * Degrades to `{ supported: false }` on a pre-item-24 server.
+ */
+export async function listPolicies() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  try {
+    const rows = await catalogRows(
+      `SELECT name, table_name, operation, using_expr, with_check_expr, enforced
+       FROM unidb_catalog.policies ORDER BY table_name, name`,
+    );
+    return {
+      supported: true,
+      policies: rows.map((r) => ({
+        name: r.name,
+        table: r.table_name,
+        op: r.operation,
+        usingExpr: r.using_expr,
+        withCheckExpr: r.with_check_expr,
+        enforced: !!r.enforced,
+      })),
+    };
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) return { supported: false, policies: [] };
+    throw e;
+  }
+}
+
+/**
+ * POST /auth/preview (item-24 Z6) — run `sql` as though authenticated as
+ * `asRole`, so an admin can see exactly which rows that role's RLS policies
+ * let through. Superuser-only on the server; a non-superuser caller gets a
+ * normal ApiError the UI can surface.
+ *
+ * @returns {Promise<{columns:Array<string>, rows:Array<Array<*>>}>}
+ */
+export async function previewAsRole(asRole, sql) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/preview`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ as_role: asRole, sql }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { columns: j.columns ?? [], rows: j.rows ?? [] };
+}
+
 // EXPLAIN ANALYZE returns a `rows` result: one single-string column per plan
 // line, with a trailing `execution_time_ms=<n>` line under ANALYZE. Pull that
 // number out — it's the true SERVER execution time, distinct from round-trip.
@@ -353,6 +450,44 @@ export function isSingleSelect(sql) {
   const trimmed = sql.trim().replace(/;\s*$/, '');
   if (trimmed.includes(';')) return false; // multiple statements
   return /^(select|with)\b/i.test(trimmed);
+}
+
+// ---- auth discovery / identity (item 100) --------------------------------
+/**
+ * GET /auth/meta — public discovery endpoint. Already shipped (item 100);
+ * used by the Auth panel (G1) to show real server auth configuration while
+ * the credentialed-login endpoints (engine item 121) don't exist yet.
+ * Degrades to `{ supported: false }` on a very old pre-item-100 server.
+ */
+export async function getAuthMeta() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/meta`);
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, ...(await res.json()) };
+}
+
+/**
+ * GET /auth/whoami — the caller's own identity/privileges (item 100).
+ * Requires a valid JWT; degrades to `{ supported: false }` on a server that
+ * predates the route.
+ */
+export async function getWhoami() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/whoami`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, ...(await res.json()) };
 }
 
 // ---- observability (item 21) --------------------------------------------

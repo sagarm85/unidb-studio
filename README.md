@@ -35,6 +35,26 @@ Five panels, all over `POST /sql` and `GET /tables`:
    only multi-statement-atomicity mechanism). Reports total wall-clock and
    rows/sec.
 
+## Authorization panels (Roles, Policies, Authentication)
+
+Three more panels cover Supabase-parity auth/authorization (see
+[`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
+full plan and status):
+
+- **Roles** — users + roles list, transitive role-membership editor, and a
+  per-table GRANT/REVOKE checkbox matrix. Fully live over the item-24 RBAC
+  engine (`unidb_catalog.{users,roles,grants,role_members}` + auth DDL).
+- **Policies** — RLS policy list/create/drop (`CREATE POLICY`/`DROP POLICY`,
+  `USING`/`WITH CHECK`, `current_user`) plus a **Preview as role** tool
+  (`POST /auth/preview`) to see exactly which rows a user's policies let
+  through. All live. Role-scoped policies (`TO <role>`) and `auth.uid()`/
+  `auth.jwt()` helpers are shown as explicitly unavailable until engine item
+  122 ships — the shipped `CREATE POLICY` grammar has no `TO` clause yet.
+- **Authentication** — a real-data status panel (`GET /auth/meta` + `GET
+  /auth/whoami`, both already shipped). Credentialed signup/login/session
+  actions depend on engine item 121 (not started) and are shown as explicit
+  "not available yet" cards, never fabricated data or a dead-looking form.
+
 ## Configure it (point it at a server)
 
 Config is read from `.env.local` at build/dev time and is **never hardcoded**:
