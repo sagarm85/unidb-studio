@@ -37,12 +37,15 @@ Five panels, all over `POST /sql` and `GET /tables`:
 
 ## Authorization panels (Roles, Policies, Authentication, API Docs)
 
-Four more panels cover Supabase-parity auth/authorization/API surface, all
-live against unidb main's merged auth + auto-REST contract (PR #222 + #223).
-See [`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for
-the full plan, status, and the two feature-detected pieces that activate
-automatically once specific follow-up engine work lands (existing-user
-password reset; `unidb_catalog.policies` exposing a policy's `TO` roles).
+Four more panels cover Supabase-parity auth/authorization/API surface,
+fully live against unidb main's merged auth + auto-REST contract (PR #222,
+#223, #224, #225). See
+[`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
+full plan and per-panel verification notes. There are no remaining
+feature-detect stubs in these four panels — the two that were previously
+pending (password reset DDL; `unidb_catalog.policies.target_roles`) both
+shipped and are wired live, with a graceful catalog-column fallback kept
+only for interop with older servers that predate the column.
 
 - **Roles** — users + roles list, transitive role-membership editor, a
   per-table GRANT/REVOKE checkbox matrix, and the three built-in roles
@@ -53,19 +56,44 @@ password reset; `unidb_catalog.policies` exposing a policy's `TO` roles).
   CHECK (…)]` / `DROP POLICY`, with a role-target chip picker and
   helper-insert buttons for `current_user`, `auth.uid()`, and
   `auth.jwt() ->> 'claim'` (always parenthesised, per the documented `->>`
-  precedence caveat), plus **Preview as role** (`POST /auth/preview`).
-- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami` (now also
+  precedence caveat), plus **Preview as role** (`POST /auth/preview`). Each
+  existing policy now shows its actual `target_roles` (from
+  `unidb_catalog.policies`) — a role-chip list when `TO`-scoped, or
+  "(all roles)" for the unscoped `"*"` case.
+- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami` (also
   showing the JWKS discovery URL and signup status), a users list with
-  create-with-password/delete, a reset-password control that quietly
-  activates once the engine accepts `ALTER USER … PASSWORD`, and a flow
-  tester over the real `POST /auth/{login,signup,refresh,logout}` routes —
-  tokens shown are kept in-memory only, never persisted or swapped into the
-  Studio's own admin session token.
+  create-with-password/delete, a **live** reset-password control
+  (`ALTER USER <name> PASSWORD '…'`, superuser-gated), an **active
+  sessions** table (`unidb_catalog.sessions`: session id, user, created,
+  expires, revoked status — never a token/hash) with per-session revoke
+  (`DELETE /auth/sessions/{id}`), and a flow tester over the real
+  `POST /auth/{login,signup,refresh,logout}` routes — tokens shown are kept
+  in-memory only, never persisted or swapped into the Studio's own admin
+  session token.
 - **API Docs** — a live schema + curl-snippet viewer generated from the
   engine's own `GET /rest/v1` OpenAPI 3 document, plus a **GET explorer**
   exercising the real `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/
   in/is`)/`order=`/`limit`/`offset` query surface over
-  `/rest/v1/<table>` and rendering results live.
+  `/rest/v1/<table>` and rendering results live. Embedded-resource
+  (`?select=id,customer(name)`) examples are not yet built — that engine
+  surface (C2) hasn't merged.
+
+## Storage panel
+
+The object-storage browser (buckets/objects over `/storage/*`) now reflects
+per-object authorization (item 120, F1), fully live:
+
+- Buckets carry a **public/private** flag (`is_public`), shown as a badge in
+  both the bucket list and the open bucket's toolbar; creating a bucket
+  exposes the same toggle.
+- Objects show their **owner** (the JWT `sub` that uploaded them) in a
+  dedicated column.
+- Reads, writes, deletes, and presigned-URL issuance are authorized per
+  caller: private buckets are owner-only, public buckets are
+  readable-by-anyone (writes/deletes stay owner-only), and a superuser or
+  `service_role` token bypasses both. The object list simply omits objects
+  the caller can't read (no 403 on list); a blocked write/delete/download
+  surfaces the engine's `STORAGE_FORBIDDEN` as a plain-language message.
 
 ## Configure it (point it at a server)
 

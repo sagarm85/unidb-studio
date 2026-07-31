@@ -443,18 +443,18 @@ export async function getAuthzSnapshot() {
  * Columns: name, table_name, operation, using_expr, with_check_expr, enforced.
  * Degrades to `{ supported: false }` on a pre-item-24 server.
  */
-// `target_roles` on `unidb_catalog.policies` is feature-detected, not
-// assumed: as of this session the column doesn't exist yet (verified against
-// src/sql/information_schema.rs on unidb main — the relation's column list
-// is still `(name, table_name, operation, using_expr, with_check_expr,
-// enforced)`), but the engine owner is adding it imminently so the panel can
-// show which existing policies are `TO <role,…>` scoped. `null` here means
-// "column absent — caller must fall back to an unscoped display", tracked
-// once per session by the caller rather than re-probed on every load.
+// `target_roles` on `unidb_catalog.policies` shipped in PR #225 (item 4):
+// a comma-joined, alphabetically-sorted role list, or the literal `"*"` for
+// a policy with no `TO` clause (applies to every caller) — verified against
+// `src/sql/information_schema.rs::policies_rows` on unidb main. Still
+// feature-detected (not assumed) so the Studio keeps working against an
+// older server that predates this column: the widened `SELECT` is tried
+// first, and a confirmed `COLUMN_NOT_FOUND` is remembered for the session
+// rather than re-probed on every load.
 let targetRolesColumnKnownAbsent = false;
 
 function normalizeTargetRoles(raw) {
-  if (raw == null || raw === '') return [];
+  if (raw == null || raw === '' || raw === '*') return [];
   if (Array.isArray(raw)) return raw;
   return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
 }
@@ -677,6 +677,59 @@ export async function authLogout(refreshToken) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- active sessions (item 4; G1 "active sessions" panel) ----------------
+/**
+ * `unidb_catalog.sessions` — one row per refresh-token session (item 4,
+ * shipped PR #225). Columns: session_id, username, created_at, expires_at
+ * (both epoch **seconds** — verified against `authz::now_secs()` on unidb
+ * main, not milliseconds like the storage timestamps), revoked. Never the
+ * raw refresh token or its hash. Visibility mirrors item 111: a superuser
+ * (or open/bootstrap mode) sees every session; a named non-superuser sees
+ * only their own. Degrades to `{ supported: false }` on a pre-item-4 server.
+ */
+export async function listSessions() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  try {
+    const rows = await catalogRows(
+      `SELECT session_id, username, created_at, expires_at, revoked
+       FROM unidb_catalog.sessions ORDER BY created_at DESC`,
+    );
+    return {
+      supported: true,
+      sessions: rows.map((r) => ({
+        sessionId: r.session_id,
+        username: r.username,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        revoked: !!r.revoked,
+      })),
+    };
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) return { supported: false, sessions: [] };
+    throw e;
+  }
+}
+
+/**
+ * DELETE /auth/sessions/{id} — revoke one session by its opaque session_id
+ * (item 4). Self/superuser gated server-side; idempotent and always 204
+ * (unknown id or someone else's session are both a silent no-op, by design —
+ * see REST_API.md).
+ */
+export async function revokeSession(sessionId) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
     });
   } catch (err) {
     throw transportError(err);
@@ -959,12 +1012,21 @@ function parseSseFrame(frame) {
   return out;
 }
 
-// ── Storage (item 31) ────────────────────────────────────────────────────────
+// ── Storage (item 31; per-object authorization item 120/F1, PR #226) ─────────
 // Routes: GET/POST /storage/buckets, DELETE /storage/buckets/{name},
 //         GET /storage/{bucket}/objects, PUT/DELETE /storage/{bucket}/objects/{*key},
 //         GET /storage/{bucket}/presign/{*key}
 // Returns { supported: false } on 404 (pre-item-31 engine) or 503
 // (item-31 engine with STORAGE_BACKEND not configured).
+//
+// F1: every object route now authorizes against the caller's identity —
+// ownership (`created_by`/`owner`, stamped from the caller's JWT `sub` at
+// PUT time), a bucket's `is_public` read-exemption, or a superuser/
+// `service_role` bypass. Listing filters silently (never 403s); write/delete/
+// presign 403 STORAGE_FORBIDDEN when the caller isn't the owner and no
+// exemption applies — see REST_API.md's "Per-object authorization" section.
+// This module doesn't re-implement any of that; it just surfaces the fields
+// (`is_public`, `owner`) and lets a 403 propagate as a normal ApiError.
 
 export async function listBuckets() {
   let res;
@@ -982,7 +1044,11 @@ export async function createBucket(name, { isPublic = false } = {}) {
   const res = await fetch(`${BASE_URL}/storage/buckets`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, public: isPublic }),
+    // Wire field is `is_public` (verified against src/server/storage.rs's
+    // CreateBucketRequest on unidb main) — NOT `public`. Repeating
+    // create_bucket for an existing name is a no-op and does not update
+    // this flag (no route exists to change it after creation).
+    body: JSON.stringify({ name, is_public: isPublic }),
   });
   if (!res.ok) throw await toApiError(res);
 }
@@ -1022,7 +1088,24 @@ export async function uploadObject(bucket, key, file, onProgress) {
     const h = authHeaders({ 'Content-Type': file.type || 'application/octet-stream' });
     Object.entries(h).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     if (onProgress) xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-    xhr.onload  = () => xhr.status < 300 ? resolve() : reject(new Error(`Upload failed: ${xhr.status}`));
+    xhr.onload = () => {
+      if (xhr.status < 300) { resolve(); return; }
+      // F1 (item 120): overwriting another caller's object is a real,
+      // expected 403 STORAGE_FORBIDDEN now — surface the server's own
+      // message/code (same shape every other route's ApiError carries)
+      // instead of a bare status code.
+      let message = `Upload failed: ${xhr.status}`;
+      let code = `HTTP_${xhr.status}`;
+      try {
+        const body = JSON.parse(xhr.responseText);
+        if (body?.error) message = body.error;
+        if (body?.code) code = body.code;
+      } catch { /* non-JSON error body */ }
+      const err = new Error(message);
+      err.code = code;
+      err.status = xhr.status;
+      reject(err);
+    };
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.send(file);
   });

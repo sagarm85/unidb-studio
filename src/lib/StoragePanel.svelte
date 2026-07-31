@@ -84,6 +84,8 @@
     prefix = '';
   }
 
+  const selectedBucketMeta = $derived(buckets.find((b) => (b.name ?? b) === selectedBucket));
+
   function openFolder(folderPrefix) {
     prefix = folderPrefix;
     loadObjects(selectedBucket, prefix);
@@ -137,6 +139,18 @@
   // ── upload ───────────────────────────────────────────────────
   function pickFiles() { fileInputEl?.click(); }
 
+  // The engine's own STORAGE_FORBIDDEN message is just the object path (see
+  // src/server/storage.rs) — not very actionable on its own. Prefixing an
+  // explanation keyed off the real `code` (never inventing the underlying
+  // fact) makes the F1 denial legible without pretending the server said
+  // more than it did.
+  function friendlyStorageError(e) {
+    if (e.code === 'STORAGE_FORBIDDEN') {
+      return `Forbidden — you're not the owner of this object (or it's not in a public bucket) and have no bypass: ${e.message}`;
+    }
+    return e.message;
+  }
+
   async function handleFiles(files) {
     if (!files?.length || !selectedBucket) return;
     uploading = true;
@@ -149,7 +163,7 @@
       }
       await loadObjects(selectedBucket, prefix);
     } catch (e) {
-      uploadError = e.message;
+      uploadError = friendlyStorageError(e);
     } finally {
       uploading = false;
       uploadPct = 0;
@@ -172,7 +186,7 @@
       deleteObjTarget = null;
       await loadObjects(selectedBucket, prefix);
     } catch (e) {
-      objError = e.message;
+      objError = friendlyStorageError(e);
     } finally {
       deleteObjBusy = false;
     }
@@ -186,7 +200,7 @@
       copiedKey = key;
       setTimeout(() => { if (copiedKey === key) copiedKey = null; }, 2000);
     } catch (e) {
-      objError = e.message;
+      objError = friendlyStorageError(e);
     }
   }
 
@@ -198,7 +212,7 @@
       a.download = key.split('/').pop();
       a.click();
     } catch (e) {
-      objError = e.message;
+      objError = friendlyStorageError(e);
     }
   }
 
@@ -273,7 +287,7 @@
                     <path d="M2 9v3c0 1.1 2.69 2 6 2s6-.9 6-2V9"/>
                   </svg>
                   <span class="bucket-name">{name}</span>
-                  {#if b.public}<span class="pub-badge">public</span>{/if}
+                  <span class="pub-badge" class:is-private={!b.is_public}>{b.is_public ? 'public' : 'private'}</span>
                 </button>
                 <button class="del-bucket-btn" title="Delete bucket" onclick={(e) => { e.stopPropagation(); deleteBucketTarget = name; }}>✕</button>
               </li>
@@ -305,6 +319,9 @@
                 <button class="crumb-item" onclick={() => navigateCrumb(c.index)}>{c.label}</button>
               {/each}
             </nav>
+            <span class="pub-badge" class:is-private={!selectedBucketMeta?.is_public}>
+              {selectedBucketMeta?.is_public ? 'public' : 'private'}
+            </span>
             <span class="grow"></span>
             <!-- upload -->
             <input bind:this={fileInputEl} type="file" multiple style="display:none" onchange={onFileInput} />
@@ -317,6 +334,17 @@
             </button>
             <button class="refresh-btn" onclick={() => loadObjects(selectedBucket, prefix)} disabled={objLoading}>↻</button>
           </div>
+
+          <p class="auth-note">
+            {#if selectedBucketMeta?.is_public}
+              Public bucket — any authenticated caller can read every object here, regardless of
+              owner. Writes and deletes are still owner-only (or a superuser/<code>service_role</code> bypass).
+            {:else}
+              Private bucket — only each object's owner (or a superuser/<code>service_role</code> bypass)
+              can read, write, or delete it. This list already reflects that: unreadable objects are
+              simply absent, not shown-then-blocked.
+            {/if}
+          </p>
 
           {#if uploadError}<p class="err small">{uploadError}</p>{/if}
           {#if objError}<p class="err small">{objError}</p>{/if}
@@ -346,6 +374,7 @@
                     <th class="num">Size</th>
                     <th>Modified</th>
                     <th>Type</th>
+                    <th>Owner</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -362,6 +391,7 @@
                       <td class="num muted">—</td>
                       <td class="muted">—</td>
                       <td class="muted">folder</td>
+                      <td class="muted">—</td>
                       <td></td>
                     </tr>
                   {/each}
@@ -376,6 +406,7 @@
                       <td class="num mono">{fmtSize(o.size)}</td>
                       <td class="muted">{fmtDate(o.last_modified)}</td>
                       <td class="muted type-cell" title={o.content_type}>{o.content_type?.split('/')[1] ?? '—'}</td>
+                      <td class="mono owner-cell" title={o.owner ?? 'no owner recorded (pre-F1 object)'}>{o.owner ?? '—'}</td>
                       <td class="actions-cell">
                         <button class="action-btn" title="Download" onclick={() => downloadObj(o.key)}>↓</button>
                         <button
@@ -587,6 +618,10 @@
     padding: 1px 4px;
     flex-shrink: 0;
   }
+  .pub-badge.is-private {
+    background: var(--panel-alt);
+    color: var(--muted);
+  }
   .del-bucket-btn {
     background: none;
     border: none;
@@ -731,6 +766,13 @@
   }
   .folder-btn:hover { text-decoration: underline; }
   .type-cell { font-size: 11px; max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+  .owner-cell { font-size: 11px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .auth-note {
+    margin: 0; padding: 6px 16px; font-size: 11px; color: var(--muted); line-height: 1.5;
+    background: var(--panel-alt); border-bottom: 1px solid var(--border);
+  }
+  .auth-note code { font-family: var(--mono); background: var(--panel); border-radius: 3px; padding: 0 3px; }
 
   .actions-cell {
     display: flex;

@@ -1,40 +1,28 @@
 <script>
-  import { getAuthMeta, getWhoami, getAuthzSnapshot, runSql, authLogin, authSignup, authRefresh, authLogout, BASE_URL } from './api.js';
+  import { getAuthMeta, getWhoami, getAuthzSnapshot, runSql, authLogin, authSignup, authRefresh, authLogout, listSessions, revokeSession, BASE_URL } from './api.js';
 
   // Authentication panel (Workstream G1 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
-  // Live over the engine's real contract (item 121, merged via PR #222 on
-  // unidb main): GET /auth/meta + GET /auth/whoami (item 100), user
-  // create/delete with an optional password (`CREATE USER … PASSWORD '…'`
-  // over /sql), and the full credentialed flow — POST /auth/{login,signup,
-  // refresh,logout}. Per CLAUDE.md, nothing here is fabricated: what the
-  // engine doesn't yet support is a clearly labeled "not available" card,
-  // never a dead-looking form.
-  //
-  // Password reset for an EXISTING user (`ALTER USER … PASSWORD '…'`) is
-  // feature-detected, not assumed: as of this session it isn't in unidb
-  // main's auth-DDL grammar yet (`src/authz/mod.rs::parse_auth_stmt` has no
-  // ALTER USER arm — confirmed by reading source, not guessed), but the
-  // engine owner has committed to shipping it imminently with that exact
-  // syntax. The control below actually attempts the real statement; a
-  // SQL-parse/unsupported error (the only way an unrecognized statement can
-  // fail) permanently hides it for the rest of this session rather than
-  // repeatedly erroring, and any other error (e.g. a real permission
-  // problem) surfaces normally without disabling the feature — so the
-  // control quietly starts working the moment the server understands it,
-  // with no code change needed here.
-  //
-  // Session listing/revoke-by-id stays a static "not available" card: there
-  // is no route or catalog view for it yet at all (not even a name), so
-  // there is nothing to probe — inventing a URL to try would violate "never
-  // assume an undocumented route."
+  // Live over the engine's real, fully-merged contract (items 100/121/122/4,
+  // through PR #225 on unidb main):
+  //   - GET /auth/meta + GET /auth/whoami (item 100).
+  //   - Users: list/create-with-password/delete, plus reset-password for an
+  //     EXISTING user via `ALTER USER … PASSWORD '…'` (item 4) — verified
+  //     shipped in `src/authz/mod.rs::parse_auth_stmt`, no more feature-detect
+  //     needed; it's a normal action with normal error handling now.
+  //   - The full credentialed flow: POST /auth/{login,signup,refresh,logout}.
+  //   - Active sessions: `unidb_catalog.sessions` (item 4) + revoke-by-id via
+  //     `DELETE /auth/sessions/{id}`.
+  // Per CLAUDE.md, nothing here is fabricated: anything the engine doesn't
+  // support is an explicit "not available" state, never a dead-looking form —
+  // still true for the two genuinely-open gaps noted at the bottom.
   //
   // Production issuer (A5, `UNIDB_JWT_SIGNING_KEY`) and asymmetric JWT/JWKS
-  // (A6, `UNIDB_JWT_PUBLIC_KEY` + `GET /.well-known/jwks.json`) both shipped
-  // in PR #223 — surfaced in the server-config card below via `GET
-  // /auth/meta`'s `dev_login_enabled`, which now reflects either issuer path
-  // (verified in `src/server/handlers.rs::get_auth_meta` — the field name is
-  // a holdover, its meaning broadened; the UI label says so).
+  // (A6, `UNIDB_JWT_PUBLIC_KEY` + `GET /.well-known/jwks.json`) shipped in PR
+  // #223 — surfaced in the server-config card via `GET /auth/meta`'s
+  // `dev_login_enabled`, which now reflects either issuer path (verified in
+  // `src/server/handlers.rs::get_auth_meta` — the field name is a holdover,
+  // its meaning broadened; the UI label says so).
   //
   // Role/grant/membership editing (including the three built-in roles) is
   // the Roles tab's job (G3) — not duplicated here.
@@ -45,9 +33,10 @@
   let whoami   = $state(null); // GET /auth/whoami
   let users    = $state([]);   // [{name, isSuperuser}]
   let usersSupported = $state(true);
+  let sessions = $state([]);   // [{sessionId, username, createdAt, expiresAt, revoked}]
+  let sessionsSupported = $state(true);
 
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  const UNSUPPORTED_SQL_CODES = new Set(['SQL_PARSE_ERROR', 'SQL_UNSUPPORTED', 'SQL_PLAN_ERROR']);
 
   $effect(() => { load(); });
 
@@ -55,11 +44,15 @@
     loading = true;
     error = null;
     try {
-      const [m, w, snap] = await Promise.all([getAuthMeta(), getWhoami(), getAuthzSnapshot()]);
+      const [m, w, snap, sess] = await Promise.all([
+        getAuthMeta(), getWhoami(), getAuthzSnapshot(), listSessions(),
+      ]);
       meta = m;
       whoami = w;
       usersSupported = snap.supported;
       users = snap.users;
+      sessionsSupported = sess.supported;
+      sessions = sess.sessions;
     } catch (e) {
       error = { code: e.code, message: e.message, status: e.status };
     } finally {
@@ -117,8 +110,7 @@
     }
   }
 
-  // ── reset an existing user's password (feature-detected; see header note) ─
-  let passwordResetSupported = $state(true); // true = try it; false = confirmed unsupported this session
+  // ── reset an existing user's password (ALTER USER … PASSWORD, item 4) ────
   let resetTarget   = $state(null); // username, or null
   let resetPassword = $state('');
   let resetBusy      = $state(false);
@@ -138,14 +130,34 @@
       await runSql(`ALTER USER ${resetTarget} PASSWORD ${sqlQuoteLiteral(resetPassword)}`);
       resetTarget = null;
     } catch (e) {
-      if (UNSUPPORTED_SQL_CODES.has(e.code)) {
-        passwordResetSupported = false;
-        resetTarget = null;
-      } else {
-        resetError = e.message ?? String(e);
-      }
+      resetError = e.message ?? String(e);
     } finally {
       resetBusy = false;
+    }
+  }
+
+  // ── active sessions (unidb_catalog.sessions + DELETE /auth/sessions/{id}) ─
+  let revokeBusyId = $state(null); // sessionId currently revoking, or null
+  let sessionsError = $state(null);
+
+  // created_at/expires_at are epoch SECONDS (see api.js's listSessions doc).
+  function fmtEpochSecs(secs) {
+    if (secs == null) return '—';
+    return new Date(secs * 1000).toLocaleString();
+  }
+
+  async function doRevokeSession(sessionId) {
+    revokeBusyId = sessionId;
+    sessionsError = null;
+    try {
+      await revokeSession(sessionId);
+      const sess = await listSessions();
+      sessionsSupported = sess.supported;
+      sessions = sess.sessions;
+    } catch (e) {
+      sessionsError = e.message ?? String(e);
+    } finally {
+      revokeBusyId = null;
     }
   }
 
@@ -203,21 +215,8 @@
     } catch { /* clipboard unavailable — silently ignore */ }
   }
 
-  // What's still genuinely unavailable — verified against unidb main source,
-  // not assumed. Password reset drops off this list automatically once the
-  // engine responds well to ALTER USER (passwordResetSupported flips false
-  // only after a confirmed unsupported-statement error, see above).
-  const PENDING_STATIC = [
-    { name: 'List / revoke a user’s active sessions', detail: 'Only single-token refresh (rotate) and logout (revoke) exist — no route or catalog view enumerates a user’s sessions yet.', ref: 'gap' },
-  ];
-  const pending = $derived(
-    passwordResetSupported === false
-      ? [
-          { name: 'Reset an existing user’s password', detail: 'This server returned a SQL-parse/unsupported error for ALTER USER … PASSWORD — it doesn’t understand that statement yet. New users can still get a password at creation time (above).', ref: 'gap' },
-          ...PENDING_STATIC,
-        ]
-      : PENDING_STATIC,
-  );
+  // No remaining "not available" gaps for G1 as of PR #225 — password reset
+  // and session listing/revoke are both live below.
 </script>
 
 <div class="auth">
@@ -318,9 +317,7 @@
               <span class="mono">{u.name}</span>
               {#if u.isSuperuser}<span class="pill super">superuser</span>{/if}
               <span class="grow"></span>
-              {#if passwordResetSupported !== false}
-                <button class="link-btn" title="Reset password" onclick={() => openReset(u.name)}>Reset password</button>
-              {/if}
+              <button class="link-btn" title="Reset password" onclick={() => openReset(u.name)}>Reset password</button>
               <button class="del-btn" title="Drop user" onclick={() => deleteUser(u.name)}>✕</button>
             </li>
           {/each}
@@ -329,9 +326,52 @@
       <p class="muted small foot-note">
         Password is optional at creation (needed only if this user will use password login/signup
         below). Role membership and table grants are managed in the <strong>Roles</strong> tab.
-        {#if passwordResetSupported === false}
-          Resetting an existing user's password isn't supported by this server yet.
-        {/if}
+      </p>
+    </section>
+
+    <section class="card">
+      <h3>Active sessions</h3>
+      {#if !sessionsSupported}
+        <p class="muted small">This server doesn't expose <code>unidb_catalog.sessions</code> yet.</p>
+      {:else if sessions.length === 0}
+        <p class="muted small">No sessions yet — issue one via login/signup/refresh below.</p>
+      {:else}
+        {#if sessionsError}<p class="err small">{sessionsError}</p>{/if}
+        <table class="session-table">
+          <thead>
+            <tr><th>Session</th><th>User</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {#each sessions as s}
+              <tr class:revoked-row={s.revoked}>
+                <td class="mono session-id" title={s.sessionId}>{s.sessionId.slice(0, 12)}…</td>
+                <td class="mono">{s.username}</td>
+                <td class="small">{fmtEpochSecs(s.createdAt)}</td>
+                <td class="small">{fmtEpochSecs(s.expiresAt)}</td>
+                <td>
+                  {#if s.revoked}
+                    <span class="pill muted">revoked</span>
+                  {:else}
+                    <span class="pill ok">active</span>
+                  {/if}
+                </td>
+                <td>
+                  {#if !s.revoked}
+                    <button class="link-btn" onclick={() => doRevokeSession(s.sessionId)} disabled={revokeBusyId === s.sessionId}>
+                      {revokeBusyId === s.sessionId ? 'Revoking…' : 'Revoke'}
+                    </button>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+      <p class="muted small foot-note">
+        A superuser sees every session; a named non-superuser sees (and may revoke) only their own —
+        server-enforced, not filtered client-side. Revoking here is per-session
+        (<code>DELETE /auth/sessions/{'{id}'}</code>); the flow tester below still uses
+        <code>POST /auth/logout</code> for the token you're currently holding.
       </p>
     </section>
 
@@ -411,25 +451,6 @@
       {/if}
     </section>
 
-    <section class="card pending-card">
-      <h3>Still not available</h3>
-      <p class="muted small">
-        Verified against unidb main's source (not assumed) — shown so nothing above pretends to
-        cover ground it doesn't.
-      </p>
-      <ul class="pending-list">
-        {#each pending as item}
-          <li>
-            <span class="pending-badge">{item.ref}</span>
-            <div>
-              <div class="pending-name">{item.name}</div>
-              <div class="pending-detail">{item.detail}</div>
-            </div>
-            <span class="pill muted">not available</span>
-          </li>
-        {/each}
-      </ul>
-    </section>
   {/if}
 </div>
 
@@ -477,9 +498,7 @@
       </div>
       <div class="modal-body">
         <p class="muted small">
-          Attempts <code>ALTER USER {resetTarget} PASSWORD '…'</code> — not yet in this engine's
-          shipped auth DDL as of this session; if the server doesn't recognize it, this control
-          hides itself for the rest of the session instead of erroring repeatedly.
+          Runs <code>ALTER USER {resetTarget} PASSWORD '…'</code> (superuser-gated).
         </p>
         <label class="field">
           <span class="flabel">New password</span>
@@ -579,19 +598,12 @@
   }
   .copy-btn:hover { color: var(--text); border-color: var(--accent); }
 
-  .pending-card { background: var(--panel-alt); }
-  .pending-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .pending-list li {
-    display: flex; align-items: center; gap: 10px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
-  }
-  .pending-badge {
-    font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--muted);
-    background: var(--panel-alt); border-radius: 4px; padding: 2px 6px; flex-shrink: 0;
-  }
-  .pending-name { font-size: 13px; font-weight: 600; }
-  .pending-detail { font-size: 11px; color: var(--muted); margin-top: 1px; }
-  .pending-list li > div:nth-child(2) { flex: 1; min-width: 0; }
+  .session-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .session-table th, .session-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+  .session-table th { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .session-table tr:last-child td { border-bottom: none; }
+  .session-table tr.revoked-row { opacity: 0.6; }
+  .session-id { white-space: nowrap; }
 
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
