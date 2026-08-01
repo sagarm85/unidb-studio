@@ -1429,3 +1429,110 @@ export async function getGraphqlSchema() {
   }
   return { supported: true, schema: out.data.__schema };
 }
+// ---- auth admin API — user management (item 142, PR #245) -----------------
+// Supabase-parity `auth.admin`: superuser-only /auth/admin/users/* for
+// listing, inspecting, creating, updating, and deleting users, plus two
+// new pieces of per-user state — `banned` and split `app_metadata`/
+// `user_metadata` — without hand-rolling CREATE/DROP/ALTER USER SQL. Every
+// route is superuser-gated server-side (403 PERMISSION_DENIED otherwise);
+// a GET response NEVER includes a password hash, refresh token, or session
+// detail (verified against REST_API.md's "Auth admin API" section) — this
+// module doesn't add any client-side redaction because the server never
+// sends the sensitive value in the first place.
+
+/**
+ * GET /auth/admin/users?limit=&offset= — paginated user list. `total` is
+ * always the full unpaginated count (mirrors item 139's Content-Range
+ * posture), never just the returned page length.
+ */
+export async function adminListUsers({ limit = 50, offset = 0 } = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, users: [], total: 0 };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, users: j.users ?? [], total: j.total ?? 0 };
+}
+
+/** GET /auth/admin/users/{id} — {id} is the username (unidb has no separate user-id column). */
+export async function adminGetUser(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * POST /auth/admin/users — create a user. Only `username` is required;
+ * `password` is optional (a passwordless account can still be reached via
+ * OAuth/magic-link later).
+ */
+export async function adminCreateUser(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * PATCH /auth/admin/users/{id} — partial update; only supplied fields
+ * change. `banned: true` revokes every session for that user server-side;
+ * `superuser: false` demoting the last remaining superuser is rejected
+ * (403 PERMISSION_DENIED), same lockout guard as adminDeleteUser below.
+ */
+export async function adminUpdateUser(username, payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PATCH',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * DELETE /auth/admin/users/{id} — reuses DROP USER's exact cleanup
+ * (memberships, grants, credentials, MFA, OAuth links, ban/metadata state).
+ * Dropping the last remaining superuser is rejected (403 PERMISSION_DENIED,
+ * not a silent no-op); an unknown username is 404, never a silent 204.
+ */
+export async function adminDeleteUser(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
