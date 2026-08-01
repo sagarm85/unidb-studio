@@ -69,15 +69,19 @@ feature-detect stubs in any of these panels.
   MFA** enroll/verify/disable (`POST /auth/mfa/{enroll,verify,disable}` +
   the login-time `POST /auth/mfa/challenge` redemption — the secret and
   `otpauth://` URI are shown for manual entry; recovery codes shown once),
-  and **OAuth sign-in** buttons for Google/GitHub, each independently
-  feature-detected and hidden when its provider isn't configured server-side.
-  Tokens shown in the flow tester are kept in-memory only, never persisted
-  or swapped into the Studio's own admin session token. **Email auth
-  flows** — password recovery (`POST /auth/recover` → `POST /auth/verify`)
-  and magic-link sign-in (`POST /auth/magiclink` → `POST
-  /auth/magiclink/verify`), both request steps showing the real uniform
-  `{ok:true}` no-enumeration response. See "Contract notes" below for the
-  redemption-token limitation.
+  and **OAuth sign-in** buttons for all seven built-in preset providers
+  (Google/GitHub/Apple/Microsoft/GitLab/Discord/Facebook), each
+  independently feature-detected and hidden when its provider isn't
+  configured server-side. Tokens shown in the flow tester are kept
+  in-memory only, never persisted or swapped into the Studio's own admin
+  session token. **Email auth flows** — password recovery
+  (`POST /auth/recover` → `POST /auth/verify`) and magic-link sign-in
+  (`POST /auth/magiclink` → `POST /auth/magiclink/verify`), both request
+  steps showing the real uniform `{ok:true}` no-enumeration response, plus
+  a live **dev-inbox viewer** (`GET`/`DELETE /auth/dev-inbox`) that reads
+  back real captured recovery/magic-link emails and fills the redemption
+  token field for you — superuser-only, absent entirely on a real-SMTP
+  deployment.
 - **API Docs** — a live schema + curl-snippet viewer generated from the
   engine's own `GET /rest/v1` OpenAPI 3 document, plus a full **GET/POST/
   PATCH/DELETE explorer** exercising the real `select=`/filter (`eq/neq/gt/
@@ -199,26 +203,27 @@ token's expiry. The endpoint exists only in the dev server, never in builds.
 Gaps found between the documented/expected contract and what the engine
 actually exposes, discovered while building the panels above. These are
 flagged here rather than worked around with invented behavior, per this
-repo's `CLAUDE.md` rule.
+repo's `CLAUDE.md` rule. **No open gaps as of this writing** — both items
+below were flagged in an earlier session against an at-the-time-current
+`unidb` clone and have since shipped on `unidb` main; kept here as a
+resolved record rather than deleted outright (see
+`docs/AUTH_POLICY_PANELS_PLAN.md` for the full live-verification detail of
+each fix).
 
-- **No route to read back a sent recovery/magic-link email (item 138).**
-  The default `UNIDB_EMAIL_TRANSPORT=log` writes the rendered email to a
-  server-side file (`<data_dir>/email-dev-inbox.jsonl`) with no
-  corresponding HTTP route (e.g. a `GET /auth/dev-inbox`) to read it back.
-  A static SPA can't read server-local files, so the Email auth flows UI
-  in the Authentication panel requires the recovery/magic-link token to be
-  pasted in by hand for redemption rather than offering a "check your
-  inbox" experience. This is a real engine gap, not a Studio bug — filing
-  a `GET /auth/dev-inbox` (dev-transport only) route would close it.
-- **OAuth provider presets beyond Google/GitHub (item 143) do not exist.**
-  A prior task assumed item 143 added preset configuration for apple/
-  azure/gitlab/discord/facebook providers. Grepping `../unidb/docs/
-  REST_API.md`, `../unidb/docs/backlog/backlog_index.md`, and
-  `../unidb/src/server/oauth.rs` found no trace of item 143 or of any
-  provider beyond Google/GitHub — `oauth.rs`'s `from_env()` hardcodes the
-  provider loop to exactly `["google", "github"]`. No preset UI was built
-  for the unsupported providers; the existing Google/GitHub buttons (item
-  128) remain the full OAuth surface until the engine adds more providers.
+- **Resolved (item 145, PR #248): reading back a sent recovery/magic-link
+  email.** The default `UNIDB_EMAIL_TRANSPORT=log` writes the rendered
+  email to a server-side file with no HTTP route to read it back — flagged
+  as a gap in an earlier session. `GET`/`DELETE /auth/dev-inbox` now
+  closes it (superuser-only, `404` on a real-SMTP deployment); the
+  Authentication panel's Email auth flows card has a live dev-inbox viewer
+  that fills the redemption token for you instead of requiring a
+  hand-copied value.
+- **Resolved (item 143 part 2, PR #246): OAuth provider presets beyond
+  Google/GitHub.** An earlier session found no trace of apple/azure/
+  gitlab/discord/facebook presets against its `unidb` clone at the time.
+  Item 143 part 2 has since shipped — all seven preset providers are now
+  live in the Authentication panel, each independently feature-detected
+  exactly like Google/GitHub always were.
 
 ## Notes / known limitations
 

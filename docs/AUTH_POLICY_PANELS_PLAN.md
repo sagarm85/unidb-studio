@@ -1,7 +1,7 @@
 # Studio auth / policies / roles / API-docs panels (Workstream G)
 
 **Status:** NINE PANELS FULLY LIVE, against unidb main's fully merged
-Supabase-parity surface (PR #222 through #245): password
+Supabase-parity surface (PR #222 through #250): password
 login/signup/refresh/logout + session listing/revoke, `ALTER USER …
 PASSWORD`, `auth.uid()`/`auth.jwt()`, built-in roles, role-scoped policies
 with a readable `target_roles`, column-level grants, production JWT issuer +
@@ -10,11 +10,16 @@ asymmetric verify/JWKS, auth rate-limiting, realtime per-subscriber RLS
 C2 embedded-resource expansion + item-136 per-embed filter/order/limit/
 offset + item-139 `Prefer` (`count=exact`, `return=representation|
 minimal`), per-object storage authorization (F1), TOTP MFA (item 127, D4),
-OAuth 2.0 social login (item 128, D1), a schema-derived GraphQL API (item
-130, C4) with item-133 mutations, email auth flows (item 138), a
-superuser user-management panel (item 142), database webhooks (item 141),
-and realtime channel authorization policies (item 140). No feature-detect
-stubs remain in any panel (updated 2026-08-01, second session).
+OAuth 2.0 social login — now all **seven** preset providers, item 128 +
+item 143 part 2 — a schema-derived GraphQL API (item 130, C4) with
+item-133 mutations, email auth flows (item 138) with a live dev-inbox
+viewer (item 145), a superuser user-management panel (item 142), database
+webhooks (item 141), and realtime channel authorization policies (item
+140). No feature-detect stubs remain in any panel, and **no flagged
+engine gaps remain either** — item 143's OAuth presets and item 145's
+dev-inbox route (both flagged as gaps in the prior session) shipped on
+`unidb` main and are now fully wired up (updated 2026-08-01, third
+session).
 
 **Tracks:** engine roadmap `../unidb/docs/backlog/120_supabase_parity_roadmap.md`
 (Workstream G), which depended on engine workstreams A (121), B (122), C
@@ -148,6 +153,28 @@ against a rebuilt engine (through PR #226), not just read against docs:
   rendered in the flow tester.
 - `api.js` gained `mfaEnroll`/`mfaVerify`/`mfaChallenge`/`mfaDisable`,
   `getOauthProviders`/`oauthAuthorizeUrl`/`oauthCallback`.
+- **OAuth presets widened to all seven, done this session (item 128 D1 +
+  item 143 part 2, PR #246):** a prior session flagged apple/azure/gitlab/
+  discord/facebook as a non-existent engine feature (item 143 grepped up
+  empty against a stale `unidb` clone). Re-pulling `unidb` main this session
+  showed item 143 had since shipped (PR #246, "Auth hardening: HIBP
+  leaked-password check + 5 more OAuth presets") — `REST_API.md`'s OAuth
+  section now documents **seven** built-in preset provider names, all
+  normalized through the same `UserInfo::provider_user_id` (`sub`/`id`)
+  extraction, no code change needed on the engine side per provider. The
+  Studio's `OAUTH_PROVIDERS` array widened from two entries to all seven,
+  and the button row changed from two hardcoded `{#if}` blocks to a loop
+  over a `OAUTH_PROVIDER_LABELS` map, so each of the seven is
+  independently feature-detected exactly like Google/GitHub were — no new
+  detection logic. **Verified live:** started a rebuilt `unidb-server` with
+  only `apple` and `discord` configured (dummy client id/secret/redirect,
+  no other providers) — the panel correctly showed exactly those two
+  buttons ("Apple", "Discord") and none of the other five, confirming
+  per-provider feature-detection still works correctly at seven providers
+  instead of two. Apple's known userinfo-endpoint caveat (REST_API.md: no
+  REST userinfo endpoint, requires an operator-run shim) is an engine-side
+  documented gap, not a Studio one — the button behaves identically to any
+  other preset from this SPA's point of view.
 - **Email auth flows** (new this session, item 138, PR #241): password
   recovery (`POST /auth/recover` → `POST /auth/verify`) and magic-link
   sign-in (`POST /auth/magiclink` → `POST /auth/magiclink/verify`), both
@@ -171,6 +198,30 @@ against a rebuilt engine (through PR #226), not just read against docs:
   succeeded, password changed, every session revoked; magic-link request →
   redemption → a real session issued, appearing in the flow tester's token
   panel exactly like a password login would.
+- **Dev-inbox viewer, done this session (item 145, PR #248) — closes the
+  gap flagged above:** `GET /auth/dev-inbox?limit=` / `DELETE
+  /auth/dev-inbox` read/clear the exact same dev-inbox JSONL the `log`
+  transport writes, so the token no longer needs to be copied by hand from
+  a server-side file. Double-gated server-side (REST_API.md item 145): a
+  real-SMTP deployment gets a `404` (checked first, so it never leaks that
+  this admin surface exists), a non-superuser gets a real `403
+  PERMISSION_DENIED`. The Studio's `getDevInbox()`/`clearDevInbox()`
+  distinguish the two: `supported:false` on the `404` (a genuine "not
+  applicable here" state, shown as a quiet note), while a `403` is
+  re-thrown and shown as-is rather than silently hidden — a non-superuser
+  should see *why* the viewer isn't there, same posture as every other
+  superuser-gated panel in this doc. Each captured entry shows `to`/
+  `subject`/`ts`; the token itself is extracted from the entry's own real
+  `text_body` (regex on the `token=<hex>` query param already embedded in
+  the rendered `{{link}}` — never fabricated) and a "Use this token →"
+  button fills the matching recovery/magic-link redemption field, inferred
+  from which of the two verify paths the link points at. **Verified live
+  end-to-end:** sent a real recovery request → Refresh showed the real
+  captured entry → "Use this token" correctly filled the recovery-token
+  field with the real 64-hex-char token → redemption succeeded
+  (`"Password reset. Every existing session for that user is now
+  revoked."`) → Clear emptied the inbox and the panel correctly fell back
+  to its "no captured emails yet" state.
 
 User/role/grant/membership administration beyond credentials stays in the
 Roles tab (G3) — not duplicated here, though both read the same
@@ -481,17 +532,34 @@ Built against `GET/PUT/DELETE /realtime/policies`.
   (item 136) and `Prefer`/`count=exact`/`return=` (item 139) in the API-docs
   explorer. Nine panels total; no feature-detect stubs remain in any of
   them.
-- **OAuth provider presets (item 128/143) — engine-side finding, not a
-  Studio gap:** the task that requested this round asked for provider-preset
-  UI covering google/github/apple/azure/gitlab/discord/facebook (item 143).
-  Grepping `../unidb/docs/REST_API.md`, `../unidb/docs/backlog/
-  backlog_index.md`, and `../unidb/src/server/oauth.rs` turned up zero hits
-  for "item 143" or for any provider beyond google/github — `oauth.rs`'s
-  `from_env()` hardcodes the provider loop to exactly `["google", "github"]`.
-  Item 143 does not exist in this engine. Per the hard "never invent
-  routes/params" rule, no preset UI was built for the unsupported providers;
-  G1's existing google/github buttons (item 128, already shipped) are the
-  full extent of OAuth in this Studio until the engine adds more providers.
+- **Done, fourth session (PR #246–#250 on unidb main):** re-pulled `unidb`
+  main (the third session's clone predated item 143's second half and item
+  145 entirely) and closed both gaps the third session had flagged: OAuth
+  presets widened to all seven providers (item 128 D1 + item 143 part 2)
+  and a live dev-inbox viewer (item 145) replacing the "paste the token by
+  hand" workaround in the email auth flows card. See the updated bullets
+  under "OAuth 2.0 social login" and "Email auth flows" above for the
+  live-verification detail. Zero flagged engine gaps remain as of this
+  session.
+- **Correction — the item-143 finding below is stale, kept for the
+  record:** the third session's OAuth-presets finding (immediately below)
+  was correct *at the time*, against the `unidb` clone that session had —
+  item 143 part 2 genuinely had not landed yet. It shipped on `unidb` main
+  before this (fourth) session started. Left in place rather than deleted,
+  per this repo's "record corrections inline, never as silent rewrites"
+  convention (`unidb/CLAUDE.md` §9) — the lesson (re-pull `main` before
+  trusting a "this doesn't exist" finding from a prior session) is the
+  point, not just the outcome.
+- **OAuth provider presets (item 128/143) — third-session finding, since
+  superseded (see correction above):** the task that requested that round
+  asked for provider-preset UI covering google/github/apple/azure/gitlab/
+  discord/facebook (item 143). Grepping `../unidb/docs/REST_API.md`,
+  `../unidb/docs/backlog/backlog_index.md`, and `../unidb/src/server/
+  oauth.rs` turned up zero hits for "item 143" or for any provider beyond
+  google/github at that time — `oauth.rs`'s `from_env()` hardcoded the
+  provider loop to exactly `["google", "github"]`. Per the hard "never
+  invent routes/params" rule, no preset UI was built for the
+  then-unsupported providers that session.
 - **Available but not requested:** column-level grants UI in the Roles tab
   (item 112/B5).
 - **Deliberately not built, documented as a decision (not a silent gap):**
