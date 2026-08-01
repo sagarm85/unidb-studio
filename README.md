@@ -35,17 +35,14 @@ Five panels, all over `POST /sql` and `GET /tables`:
    only multi-statement-atomicity mechanism). Reports total wall-clock and
    rows/sec.
 
-## Authorization panels (Roles, Policies, Authentication, API Docs)
+## Authorization panels (Roles, Policies, Authentication, API Docs, GraphQL)
 
-Four more panels cover Supabase-parity auth/authorization/API surface,
-fully live against unidb main's merged auth + auto-REST contract (PR #222,
-#223, #224, #225). See
+Five more panels cover Supabase-parity auth/authorization/API surface,
+fully live against unidb main's merged auth + auto-REST + GraphQL contract
+(PR #222 through #234). See
 [`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
 full plan and per-panel verification notes. There are no remaining
-feature-detect stubs in these four panels — the two that were previously
-pending (password reset DDL; `unidb_catalog.policies.target_roles`) both
-shipped and are wired live, with a graceful catalog-column fallback kept
-only for interop with older servers that predate the column.
+feature-detect stubs in any of these panels.
 
 - **Roles** — users + roles list, transitive role-membership editor, a
   per-table GRANT/REVOKE checkbox matrix, and the three built-in roles
@@ -66,17 +63,31 @@ only for interop with older servers that predate the column.
   (`ALTER USER <name> PASSWORD '…'`, superuser-gated), an **active
   sessions** table (`unidb_catalog.sessions`: session id, user, created,
   expires, revoked status — never a token/hash) with per-session revoke
-  (`DELETE /auth/sessions/{id}`), and a flow tester over the real
-  `POST /auth/{login,signup,refresh,logout}` routes — tokens shown are kept
-  in-memory only, never persisted or swapped into the Studio's own admin
-  session token.
+  (`DELETE /auth/sessions/{id}`), a flow tester over the real
+  `POST /auth/{login,signup,refresh,logout}` routes (branching on the
+  `mfa_required` challenge shape when the account has MFA enabled), **TOTP
+  MFA** enroll/verify/disable (`POST /auth/mfa/{enroll,verify,disable}` +
+  the login-time `POST /auth/mfa/challenge` redemption — the secret and
+  `otpauth://` URI are shown for manual entry; recovery codes shown once),
+  and **OAuth sign-in** buttons for Google/GitHub, each independently
+  feature-detected and hidden when its provider isn't configured server-side.
+  Tokens shown in the flow tester are kept in-memory only, never persisted
+  or swapped into the Studio's own admin session token.
 - **API Docs** — a live schema + curl-snippet viewer generated from the
   engine's own `GET /rest/v1` OpenAPI 3 document, plus a **GET explorer**
   exercising the real `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/
-  in/is`)/`order=`/`limit`/`offset` query surface over
-  `/rest/v1/<table>` and rendering results live. Embedded-resource
-  (`?select=id,customer(name)`) examples are not yet built — that engine
-  surface (C2) hasn't merged.
+  in/is`)/`order=`/`limit`/`offset` query surface over `/rest/v1/<table>`
+  and rendering results live — including **embedded resources**
+  (`?select=id,customer(name)` forward, `?select=id,orders(id,total)`
+  reverse), with embed options derived from real foreign-key metadata, not
+  guessed.
+- **GraphQL** — a schema browser over a standard introspection query against
+  the engine's `POST /graphql` (schema-derived, read-only v1), a callout
+  surfacing unidb's two differentiators over a relational-only
+  Supabase/pg_graphql stack (`edges(type, direction)` graph traversal;
+  root `near_<table>(vector, k)` vector similarity), starter queries built
+  from the real schema, and a query editor that runs real queries and
+  renders the real `{data, errors}` response.
 
 ## Storage panel
 

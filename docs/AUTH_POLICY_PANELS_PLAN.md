@@ -1,15 +1,16 @@
 # Studio auth / policies / roles / API-docs panels (Workstream G)
 
-**Status:** ALL FOUR PANELS FULLY LIVE, against unidb main's fully merged
-Supabase-parity surface (PR #222 + #223 + #224 + #225 + #226): password
+**Status:** SIX PANELS FULLY LIVE, against unidb main's fully merged
+Supabase-parity surface (PR #222 through #234): password
 login/signup/refresh/logout + session listing/revoke, `ALTER USER …
 PASSWORD`, `auth.uid()`/`auth.jwt()`, built-in roles, role-scoped policies
 with a readable `target_roles`, column-level grants, production JWT issuer +
 asymmetric verify/JWKS, auth rate-limiting, realtime per-subscriber RLS
-(E1), the auto REST API `/rest/v1/<table>` + `GET /rest/v1` OpenAPI doc, and
-per-object storage authorization (F1). No feature-detect stubs remain — the
-two that existed in an earlier revision of this doc both resolved to "yes,
-shipped" this session (updated 2026-07-31).
+(E1), the auto REST API `/rest/v1/<table>` + `GET /rest/v1` OpenAPI doc +
+C2 embedded-resource expansion, per-object storage authorization (F1), TOTP
+MFA (item 127, D4), OAuth 2.0 social login (item 128, D1), and a
+schema-derived GraphQL API (item 130, C4). No feature-detect stubs remain
+in any of the six panels (updated 2026-08-01).
 
 **Tracks:** engine roadmap `../unidb/docs/backlog/120_supabase_parity_roadmap.md`
 (Workstream G), which depended on engine workstreams A (121), B (122), C
@@ -57,6 +58,13 @@ committed or pushed. File these as real backlog items; the fixes are small
 (a few lines each) but they block the *storage-capable* binary specifically,
 which is what the Studio's own setup docs point people to.
 
+**Still unfixed as of PR #234** (checked `unidb-server-full/src/main.rs`
+again this session — both bugs above are still present verbatim). None of
+this session's new panels (GraphQL, MFA, OAuth) touch storage, so this
+session's live verification ran against the plain `unidb-server` binary
+(built with `--features server`), which wires `ConnectInfo` correctly and
+was never affected — a clean choice, not a workaround for either bug.
+
 ## Panels
 
 ### G1 — Authentication panel — FULLY LIVE
@@ -90,6 +98,43 @@ against a rebuilt engine (through PR #226), not just read against docs:
   admin session token.
 - `api.js` gained `authLogin`/`authSignup`/`authRefresh`/`authLogout`/
   `listSessions`/`revokeSession`.
+- **TOTP MFA** (new this session, item 127, D4): enroll (`POST
+  /auth/mfa/enroll` → secret + `otpauth://` URI) → verify (`POST
+  /auth/mfa/verify` with a live code → flips `whoami.mfa_enabled`, returns 8
+  one-time recovery codes shown exactly once) → disable (`POST
+  /auth/mfa/disable`, code-gated unless the caller is a superuser). The
+  login flow tester now branches on `POST /auth/login`'s two response
+  shapes: a normal session, or `{mfa_required, challenge, expires_in}` for
+  an MFA-enabled account, redeemed inline via `POST /auth/mfa/challenge`.
+  **QR rendering deliberately not built** — see the code comment at the top
+  of `AuthPanel.svelte` for the full reasoning; short version: hand-rolling
+  a QR encoder risks a silent, unscannable-but-plausible-looking bug this
+  sandbox can't scan-test, and calling a third-party QR image API would leak
+  the TOTP secret off-device. The secret and full `otpauth://` URI are shown
+  instead, both copy-able — every authenticator app accepts manual entry.
+  Verified live end-to-end (enroll → compute a real TOTP code → verify →
+  recovery codes shown → login → MFA challenge redeemed with a fresh code →
+  disable as superuser with no code).
+- **OAuth 2.0 social login** (new this session, item 128, D1): "Sign in with
+  Google/GitHub" buttons, each feature-detected independently — `GET
+  /auth/oauth/{provider}/authorize` fetched with `redirect: 'manual'` so a
+  configured provider's 302 never actually navigates the probe (collapses to
+  an opaque response) while an unconfigured provider's readable 404 hides
+  the button. A click is a REAL browser redirect (not a fetch) to the
+  provider. Because this is a backend-less static SPA, completing the flow
+  requires the deployment's `UNIDB_OAUTH_<PROVIDER>_REDIRECT_URI` to point
+  back at the Studio's own origin (e.g. `<studio-origin>/?tab=auth`, which
+  `App.svelte`'s existing `?tab=` restore already lands on this panel); on
+  that landing, `checkOauthCallback()` forwards the provider's `?code=&state=`
+  to the engine's own `GET /auth/oauth/{provider}/callback` as a plain fetch
+  to finish the flow. **Verified live end-to-end** with a local mock OAuth
+  provider (authorize/token/userinfo) standing in for Google: button
+  correctly hidden with no provider configured, correctly shown once
+  configured, full click-through created a real
+  `oauth_google_<provider_user_id>` account and a real session, tokens
+  rendered in the flow tester.
+- `api.js` gained `mfaEnroll`/`mfaVerify`/`mfaChallenge`/`mfaDisable`,
+  `getOauthProviders`/`oauthAuthorizeUrl`/`oauthCallback`.
 
 User/role/grant/membership administration beyond credentials stays in the
 Roles tab (G3) — not duplicated here, though both read the same
@@ -159,10 +204,56 @@ shape (`{type:'rows',columns,rows}` etc.), not a bare PostgREST array.
   `id BIGINT PRIMARY KEY` form. Each column's own `description: "primary
   key"` is set correctly either way, so `columnsFor()` unions both signals.
 - `api.js` gained `getRestOpenApi`, `restGet`.
-- **Coming, don't block:** `/rest/v1` embedded resources
-  (`?select=id,customer(name)`, item C2) — not built; the OpenAPI doc has no
-  shape for it yet and inventing one would violate "never assume an
-  undocumented contract." Wire up when C2 merges.
+- **Embedded resource expansion, done this session (item 123, C2, PR #227):**
+  forward (many-to-one) and reverse (one-to-many) `name(col,col,...)` embeds
+  in both the request-snippet builder and the live GET explorer. Embed
+  options are derived from REAL foreign-key metadata — the same
+  `relationships` array `App.svelte`'s `getSchema()` already loads for the
+  Schema ERD (now passed down as a prop), not guessed or hardcoded. When two
+  forward FKs on one table target the same table (bare-name alias would be
+  `400 AMBIGUOUS_RELATIONSHIP`), the alias falls back to the FK column's own
+  name (or that column with a trailing `_id` stripped) — the alternate form
+  C2 documents. Verified live: `orders?select=customers(id,name)` correctly
+  nested each order's real customer object; `customers?select=orders(id,total)`
+  correctly nested each customer's real order array.
+
+### GraphQL explorer — NEW, FULLY LIVE (item 130, Workstream C4, PR #232)
+Shipped as `src/lib/GraphqlPanel.svelte`, a new sixth panel/tab. Built
+against `POST /graphql` — schema-derived, read-only (v1), mounted under the
+same `require_jwt` layer as every other data-plane route and resolving every
+field through the identical enforced `/sql`/`/rest/v1` path (same RLS/
+grants, no parallel policy engine — confirmed against `src/server/graphql.rs`
+and REST_API.md's "C4 — GraphQL" section).
+
+- **Schema browser**: a standard GraphQL introspection query (hand-written —
+  this project has zero runtime dependencies beyond Svelte, so no
+  `graphql-js` helper) renders root query fields and every object type's
+  fields, each annotated with real relationship kind (forward FK / reverse
+  FK / graph edges) derived from the introspected types themselves, not
+  guessed.
+- **Differentiators callout**: explicitly surfaces the two fields a
+  relational-only Supabase/pg_graphql stack doesn't have — `edges(type,
+  direction)` graph traversal (any table with a single `Int64` PK) and root
+  `near_<table>(vector, k)` vector similarity (any table with a `VECTOR`
+  column) — listing which real tables in the connected schema qualify for
+  each, or an honest "none on this schema yet" when neither applies.
+- **Starter queries**: clicking a root field or a type's "edges" row
+  generates a real, runnable query using that field/type's actual scalar
+  columns (never fabricated column names) and drops it straight into the
+  query editor.
+- **Query editor**: POSTs `{query, variables}` to `/graphql` and renders the
+  real `{data, errors}` envelope — a GraphQL-level error (e.g.
+  `PERMISSION_DENIED`) is data, not a thrown exception, so it renders
+  alongside any partial `data` rather than replacing the panel with an error
+  state.
+- `api.js` gained `graphqlRequest`, `getGraphqlSchema`.
+- Verified live end-to-end: schema loaded against a real `customers`/`orders`
+  schema (FK `orders.customer_id → customers.id`); root-field starter query
+  for `orders` ran and returned real rows; the `customers` type's
+  `edges`-starter query ran (empty `edges: []` array — correct, since no
+  `POST /edges` writes had been made against this test schema); the
+  `orders` reverse-FK field and `edges` field both showed with correct
+  badges on the `customers` type detail view.
 
 ### Storage panel — authorization surface added (item 120, F1)
 `src/lib/StoragePanel.svelte` / `api.js` updated for the newly-enforced
@@ -196,18 +287,25 @@ per-object model, plus one pre-existing Studio bug fixed along the way:
 
 ## Sequencing
 
-- **Done, this session:** all four Workstream-G panels are fully live with
-  no feature-detect stubs remaining, plus the Storage panel's F1
-  authorization surface (a fifth, related panel this round's instructions
-  covered).
-- **Not built, no contract yet (do not guess):** `/rest/v1` embedded
-  resources (G4, item C2 — explicitly "coming soon, don't block").
+- **Done, prior session:** all four original Workstream-G panels fully live,
+  plus the Storage panel's F1 authorization surface.
+- **Done, this session (PR #227–#234):** the deferred G4 embedded-resources
+  example (C2), TOTP MFA in G1 (D4), OAuth social login in G1 (D1), and a
+  brand-new GraphQL explorer panel (C4). No feature-detect stubs remain in
+  any of the six panels.
 - **Available but not requested:** column-level grants UI in the Roles tab
-  (item 112/B5).
+  (item 112/B5); GraphQL mutations/subscriptions/aggregations (explicitly
+  out of the engine's v1 GraphQL scope per REST_API.md, not a Studio gap).
+- **Deliberately not built, documented as a decision (not a silent gap):**
+  QR-code rendering for MFA enrollment — see `AuthPanel.svelte`'s header
+  comment for the full reasoning (unverifiable hand-rolled QR encoder vs.
+  leaking the TOTP secret to a third-party image API; both rejected). The
+  secret and `otpauth://` URI are shown instead, both copy-able for manual
+  entry.
 - **Filed as engine bugs, not fixed here** (`unidb` read-only for this
   workstream): the two `unidb-server-full`-specific bugs at the top of this
   doc (memory storage backend unreachable; auth routes 500 due to missing
-  `ConnectInfo` wiring).
+  `ConnectInfo` wiring) — reconfirmed still present as of PR #234.
 
 ## Conventions
 - Pure static SPA, no backend of its own — every action is a `fetch` against
