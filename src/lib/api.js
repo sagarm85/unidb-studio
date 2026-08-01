@@ -1130,3 +1130,111 @@ export async function getObjectUrl(bucket, key, expirySecs = 3600) {
   const j = await res.json();
   return j.presigned_get_url;
 }
+
+// ── GraphQL (item 130, Workstream C4; PR #232) ────────────────────────────
+// POST /graphql — schema-derived, read-only (v1) GraphQL endpoint. Mounted
+// under the same require_jwt layer as every other data-plane route (NOT
+// public) and resolves every field through the identical enforced path
+// /sql and /rest/v1 use (authorize_sql_as_principal +
+// execute_sql_params_as_principal) — same RLS/grants, no parallel policy
+// engine. Verified against docs/REST_API.md's "C4 — GraphQL" section and
+// src/server/graphql.rs on unidb main. Standard GraphQL-over-HTTP: always
+// 200 with a `{data, errors}` envelope — a GraphQL-level error (unknown
+// field, PERMISSION_DENIED, …) is data, not a fetch failure, so this only
+// throws for a transport failure or a non-2xx HTTP status.
+
+export async function graphqlRequest(query, variables = null, operationName = null) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const body = { query };
+  if (variables && Object.keys(variables).length) body.variables = variables;
+  if (operationName) body.operationName = operationName;
+  let res;
+  const start = performance.now();
+  try {
+    res = await fetch(`${BASE_URL}/graphql`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  const roundTripMs = performance.now() - start;
+  // Pre-item-130 server: no /graphql route at all.
+  if (res.status === 404) return { supported: false, data: null, errors: null, roundTripMs };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, data: j.data ?? null, errors: j.errors ?? null, roundTripMs };
+}
+
+// Standard GraphQL introspection query (hand-written — this project has no
+// runtime dependency beyond Svelte, so no graphql-js `getIntrospectionQuery`
+// helper). 6 levels of `ofType` nesting covers the deepest wrapping this
+// schema produces (NonNull(List(NonNull(Scalar)))), same depth graphql-js
+// itself uses. Item 130 says introspection (`__schema`/`__type`) is always
+// enabled — verified in the "C4 — GraphQL" section of REST_API.md.
+const TYPE_REF_FRAGMENT = `
+  kind
+  name
+  ofType {
+    kind
+    name
+    ofType {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const INTROSPECTION_QUERY = `
+  query StudioIntrospection {
+    __schema {
+      queryType { name }
+      types {
+        kind
+        name
+        description
+        fields(includeDeprecated: true) {
+          name
+          description
+          args { name type { ${TYPE_REF_FRAGMENT} } defaultValue }
+          type { ${TYPE_REF_FRAGMENT} }
+        }
+        enumValues(includeDeprecated: true) { name }
+      }
+    }
+  }
+`;
+
+/**
+ * Runs the standard introspection query and returns the raw `__schema`
+ * object (types + the root Query type's fields — root fields ARE the
+ * `<table>(...)`/`near_<table>(...)` queryable entry points per item 130).
+ * Degrades to `{ supported: false }` on a pre-item-130 server (404) or one
+ * with introspection unexpectedly disabled (a GraphQL error instead of
+ * data) — the contract says it's always on, but this never assumes that.
+ */
+export async function getGraphqlSchema() {
+  const out = await graphqlRequest(INTROSPECTION_QUERY);
+  if (!out.supported) return { supported: false, schema: null };
+  if (out.errors?.length || !out.data?.__schema) {
+    return { supported: false, schema: null, errors: out.errors ?? null };
+  }
+  return { supported: true, schema: out.data.__schema };
+}

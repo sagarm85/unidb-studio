@@ -17,11 +17,12 @@
   import PoliciesPanel from './lib/PoliciesPanel.svelte';
   import AuthPanel from './lib/AuthPanel.svelte';
   import ApiDocsPanel from './lib/ApiDocsPanel.svelte';
+  import GraphqlPanel from './lib/GraphqlPanel.svelte';
   import { runSql } from './lib/api.js';
   import { quoteIdent } from './lib/format.js';
 
-  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth' | 'apidocs'
-  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth','apidocs']);
+  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth' | 'apidocs' | 'graphql'
+  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth','apidocs','graphql']);
   const _urlTab = new URLSearchParams(window.location.search).get('tab') ?? '';
   let tab = $state(VALID_TABS.has(_urlTab) ? _urlTab : 'sql');
   let selectedTable = $state(null);
@@ -230,6 +231,19 @@
         </svg>
         API Docs
       </button>
+      <button class:active={tab === 'graphql'} onclick={() => (tab = 'graphql')} title="GraphQL">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M10 2l7 4v8l-7 4-7-4V6l7-4z"/>
+          <circle cx="10" cy="10" r="1.4" fill="currentColor" stroke="none"/>
+          <line x1="10" y1="2" x2="10" y2="8.6"/>
+          <line x1="10" y1="11.4" x2="10" y2="18"/>
+          <line x1="3" y1="6" x2="8.8" y2="9.2"/>
+          <line x1="11.2" y1="10.8" x2="17" y2="14"/>
+          <line x1="17" y1="6" x2="11.2" y2="9.2"/>
+          <line x1="8.8" y1="10.8" x2="3" y2="14"/>
+        </svg>
+        GraphQL
+      </button>
     </div>
 
     <div class="nav-bottom">
@@ -268,7 +282,7 @@
           <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
         </div>
       {/if}
-      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies' || tab === 'apidocs'}>
+      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies' || tab === 'apidocs' || tab === 'graphql'}>
         {#if tab === 'sql'}
           <SqlEditor bind:sql bind:paramsText />
         {:else if tab === 'records'}
@@ -307,6 +321,8 @@
           <AuthPanel />
         {:else if tab === 'apidocs'}
           <ApiDocsPanel />
+        {:else if tab === 'graphql'}
+          <GraphqlPanel />
         {/if}
       </section>
     </main>
