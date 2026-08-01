@@ -345,20 +345,14 @@ export async function getRestOpenApi() {
   return { supported: true, doc: await res.json() };
 }
 
-/**
- * GET /rest/v1/<table>?select=...&<filters>&order=...&limit=...&offset=...
- * `filterParams` is an array of `[column, "<op>.<value>"]` pairs — already
- * formatted by the caller (the op/value encoding is filter-shape-specific,
- * e.g. `in` wraps its value in parens, `is` takes a bare null/true/false —
- * kept in the component next to the filter-builder UI, mirroring how
- * RolesPanel/PoliciesPanel build their own SQL text next to their forms).
- *
- * @param {string} table
- * @param {{select?:string, filterParams?:Array<[string,string]>, order?:string, limit?:number, offset?:number}} [opts]
- * @returns {Promise<{result:object, url:string}>} `result` is the raw
- *   `{type:'rows', columns, rows}` body — pass straight to ResultsGrid.
- */
-export async function restGet(table, opts = {}) {
+// ── /rest/v1 with full Prefer control (item 139) + embed filter/order/limit/
+// offset (item 136) ───────────────────────────────────────────────────────
+// GET/POST/PATCH/DELETE /rest/v1/<table>, the Prefer header (`count=exact`
+// on GET; `return=representation|minimal` on a mutation), extra raw query
+// params (item 136's dotted `<embed>.<col>=<op>.<val>` / `<embed>.order=` /
+// `<embed>.limit=` / `<embed>.offset=` params, which don't fit a fixed opts
+// shape), and a JSON request body for POST/PATCH.
+export async function restRequest(table, method, opts = {}) {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
   const qs = new URLSearchParams();
   if (opts.select) qs.set('select', opts.select);
@@ -366,19 +360,50 @@ export async function restGet(table, opts = {}) {
   if (opts.order) qs.set('order', opts.order);
   if (opts.limit != null) qs.set('limit', String(opts.limit));
   if (opts.offset != null) qs.set('offset', String(opts.offset));
+  // Item 136: dotted per-embed filter/order/limit/offset params — arbitrary
+  // keys the fixed opts above don't model, so the caller (the embed-builder
+  // UI) hands them over pre-formatted as [key, value] pairs.
+  for (const [key, value] of opts.extraParams ?? []) qs.append(key, value);
   const query = qs.toString();
   const url = `${BASE_URL}/rest/v1/${encodeURIComponent(table)}${query ? `?${query}` : ''}`;
+
+  const headers = authHeaders();
+  // Item 139: Prefer is a comma-joined list of recognized preferences; the
+  // server ignores anything it doesn't recognize rather than erroring, so
+  // this never needs to feature-detect before sending it.
+  const preferParts = [];
+  if (opts.countExact) preferParts.push('count=exact');
+  if (opts.return) preferParts.push(`return=${opts.return}`);
+  if (preferParts.length) headers['Prefer'] = preferParts.join(', ');
+  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
 
   const start = performance.now();
   let res;
   try {
-    res = await fetch(url, { headers: authHeaders() });
+    res = await fetch(url, {
+      method,
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
   } catch (err) {
     throw transportError(err);
   }
   const roundTripMs = performance.now() - start;
   if (!res.ok) throw await toApiError(res);
-  return { result: await res.json(), url, roundTripMs };
+
+  // `return=minimal` (POST 201 / PATCH+DELETE 204) and a plain DELETE with
+  // no Prefer at all can both have an empty body — read as text first so
+  // JSON.parse is only attempted when there's actually something to parse.
+  const text = await res.text();
+  const result = text ? JSON.parse(text) : null;
+  return {
+    result,
+    url,
+    roundTripMs,
+    status: res.status,
+    contentRange: res.headers.get('Content-Range'),
+    preferenceApplied: res.headers.get('Preference-Applied'),
+  };
 }
 
 // ---- authorization: roles, users, grants (item 24 + item 122 B3) --------

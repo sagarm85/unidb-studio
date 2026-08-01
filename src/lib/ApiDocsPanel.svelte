@@ -1,25 +1,30 @@
 <script>
-  import { getRestOpenApi, restGet, BASE_URL } from './api.js';
+  import { getRestOpenApi, restRequest, BASE_URL } from './api.js';
   import ResultsGrid from './ResultsGrid.svelte';
 
   // API-docs panel (Workstream G4 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   // Live over engine item 123 (C1 resource routes + C3 OpenAPI doc, merged
-  // via PR #223; C2 embedded-resource expansion merged via PR #227) on
-  // unidb main. Verified against src/server/rest_resource.rs directly —
-  // docs/REST_API.md initially didn't document /rest/v1 at all despite the
-  // route shipping; that gap has since been fixed upstream (a "C1 —
-  // Resource routes" + "C2 — Embedded resource expansion" section now
-  // exists), so this panel is built against the documented contract now.
+  // via PR #223; C2 embedded-resource expansion merged via PR #227; item
+  // 136 per-embed filter/order/limit/offset via PR #239; item 139 Prefer
+  // count=exact / return=representation|minimal via PR #242) on unidb main.
+  // Verified against src/server/rest_resource.rs directly — docs/REST_API.md
+  // initially didn't document /rest/v1 at all despite the route shipping;
+  // that gap has since been fixed upstream, so this panel is built against
+  // the documented contract now.
   //
   // Three parts: (1) a schema + copy-paste curl viewer generated straight
   // from GET /rest/v1 (the engine's own OpenAPI doc — every value here is
   // engine data, never invented), (2) embedded-resource (C2) support layered
   // on top — forward/reverse FK embed options derived from the SAME real
   // catalog FK metadata the Schema tab's ERD uses (`relationships` prop,
-  // owned by App.svelte's getSchema()), not guessed or hardcoded — and (3) a
-  // live GET explorer over /rest/v1/<table> exercising the real
-  // select/filter/order/limit/offset query surface, per the C1 operator
-  // allow-list (eq/neq/gt/gte/lt/lte/like/ilike/in/is).
+  // owned by App.svelte's getSchema()), not guessed or hardcoded, now
+  // including per-embed filter/order/limit/offset (item 136) — and (3) a
+  // live GET/POST/PATCH/DELETE explorer over /rest/v1/<table> exercising the
+  // real select/filter/order/limit/offset query surface (C1 operator
+  // allow-list eq/neq/gt/gte/lt/lte/like/ilike/in/is) plus the item-139
+  // `Prefer` response controls: `count=exact` on GET (reports the real,
+  // RLS-scoped total via `Content-Range`) and `return=representation|
+  // minimal` on a mutation.
 
   let { relationships = [] } = $props();
 
@@ -177,41 +182,83 @@
     } catch { /* clipboard unavailable */ }
   }
 
-  // ── GET explorer ───────────────────────────────────────────────────────────
+  // ── explorer (GET/POST/PATCH/DELETE) ────────────────────────────────────────
   let explorerOpen = $state(false);
+  let method       = $state('GET'); // 'GET' | 'POST' | 'PATCH' | 'DELETE'
   let selectCols   = $state('');
   let filters      = $state([]); // [{column, op, value}]
   let orderRows    = $state([]); // [{column, desc}]
-  let embeds       = $state([]); // [{name, cols}] — C2 embedded resources
+  // C2 embeds, each with its own item-136 per-embed filter/order/limit/offset:
+  // [{name, cols, filters:[{column,op,value}], order:[{column,desc}], limitVal, offsetVal}]
+  let embeds       = $state([]);
   let limit        = $state(50);
   let offset       = $state(0);
+  let bodyText     = $state(''); // POST/PATCH JSON body
+  let countExact   = $state(false); // Prefer: count=exact (GET only, item 139)
+  let returnMode   = $state(''); // '' | 'representation' | 'minimal' (mutations only, item 139)
   let explorerBusy   = $state(false);
   let explorerError  = $state(null);
-  let explorerResult = $state(null); // {type,columns,rows}
+  let explorerResult = $state(null); // parsed body, shape depends on method/Prefer, or null (return=minimal)
   let explorerUrl    = $state(null);
   let explorerMs      = $state(null);
+  let explorerStatus  = $state(null);
+  let explorerContentRange = $state(null); // item 139: "<from>-<to>/<total>" when count=exact
+  let explorerPreference   = $state(null); // item 139: echoed Preference-Applied header
 
   function resetExplorer() {
     explorerOpen = false;
+    method = 'GET';
     selectCols = '';
     filters = [];
     orderRows = [];
     embeds = [];
     limit = 50;
     offset = 0;
+    bodyText = '';
+    countExact = false;
+    returnMode = '';
     explorerBusy = false;
     explorerError = null;
     explorerResult = null;
     explorerUrl = null;
     explorerMs = null;
+    explorerStatus = null;
+    explorerContentRange = null;
+    explorerPreference = null;
+  }
+
+  function relTableForEmbed(name) {
+    return embedOptionsFor(selectedTable).find((o) => o.name === name)?.relTable ?? null;
   }
 
   function addEmbed() {
     const opts = embedOptionsFor(selectedTable);
-    embeds = [...embeds, { name: opts[0]?.name ?? '', cols: '' }];
+    embeds = [...embeds, { name: opts[0]?.name ?? '', cols: '', filters: [], order: [], limitVal: '', offsetVal: '' }];
   }
   function removeEmbed(i) {
     embeds = embeds.filter((_, idx) => idx !== i);
+  }
+  function updateEmbed(i, patch) {
+    embeds = embeds.map((e, idx) => (idx === i ? { ...e, ...patch } : e));
+  }
+  function addEmbedFilter(i) {
+    const relCols = columnsFor(relTableForEmbed(embeds[i].name) ?? '');
+    updateEmbed(i, { filters: [...embeds[i].filters, { column: relCols[0]?.name ?? '', op: 'eq', value: '' }] });
+  }
+  function removeEmbedFilter(i, j) {
+    updateEmbed(i, { filters: embeds[i].filters.filter((_, fj) => fj !== j) });
+  }
+  function onEmbedOpChange(i, j, op) {
+    updateEmbed(i, {
+      filters: embeds[i].filters.map((f, fj) => (fj === j ? { ...f, op, value: op === 'is' ? 'null' : '' } : f)),
+    });
+  }
+  function addEmbedOrder(i) {
+    const relCols = columnsFor(relTableForEmbed(embeds[i].name) ?? '');
+    updateEmbed(i, { order: [...embeds[i].order, { column: relCols[0]?.name ?? '', desc: false }] });
+  }
+  function removeEmbedOrder(i, j) {
+    updateEmbed(i, { order: embeds[i].order.filter((_, oj) => oj !== j) });
   }
 
   function addFilter() {
@@ -242,30 +289,74 @@
     explorerBusy = true;
     explorerError = null;
     explorerResult = null;
+    explorerContentRange = null;
+    explorerPreference = null;
     try {
-      const filterParams = filters
-        .filter((f) => f.column && f.op)
-        .map((f) => [f.column, `${f.op}.${opValueSegment(f)}`]);
-      const order = orderRows
-        .filter((o) => o.column)
-        .map((o) => `${o.column}.${o.desc ? 'desc' : 'asc'}`)
-        .join(',');
-      // C2: embed entries (`name(col,col,...)`) sit inside the same
-      // select= param as plain columns, comma-joined alongside them.
-      const embedParts = embeds
-        .filter((e) => e.name)
-        .map((e) => `${e.name}(${e.cols.trim()})`);
-      const selectParts = [selectCols.trim(), ...embedParts].filter(Boolean);
-      const out = await restGet(selectedTable, {
-        select: selectParts.length ? selectParts.join(',') : undefined,
+      // POST has no filter concept (it's an insert); PATCH/DELETE target
+      // rows by the same base filters GET uses.
+      const filterParams = method !== 'POST'
+        ? filters.filter((f) => f.column && f.op).map((f) => [f.column, `${f.op}.${opValueSegment(f)}`])
+        : [];
+
+      let selectParam, orderParam, limitParam, offsetParam, extraParams;
+      if (method === 'GET') {
+        const order = orderRows
+          .filter((o) => o.column)
+          .map((o) => `${o.column}.${o.desc ? 'desc' : 'asc'}`)
+          .join(',');
+        // C2: embed entries (`name(col,col,...)`) sit inside the same
+        // select= param as plain columns, comma-joined alongside them.
+        const embedParts = embeds.filter((e) => e.name).map((e) => `${e.name}(${e.cols.trim()})`);
+        const selectParts = [selectCols.trim(), ...embedParts].filter(Boolean);
+        selectParam = selectParts.length ? selectParts.join(',') : undefined;
+        orderParam = order || undefined;
+        limitParam = limit;
+        offsetParam = offset;
+
+        // item 136: dotted per-embed filter/order/limit/offset params.
+        extraParams = [];
+        for (const e of embeds) {
+          if (!e.name) continue;
+          for (const f of e.filters) {
+            if (f.column && f.op) extraParams.push([`${e.name}.${f.column}`, `${f.op}.${opValueSegment(f)}`]);
+          }
+          const embOrder = e.order.filter((o) => o.column).map((o) => `${o.column}.${o.desc ? 'desc' : 'asc'}`).join(',');
+          if (embOrder) extraParams.push([`${e.name}.order`, embOrder]);
+          if (e.limitVal !== '') extraParams.push([`${e.name}.limit`, String(e.limitVal)]);
+          if (e.offsetVal !== '') extraParams.push([`${e.name}.offset`, String(e.offsetVal)]);
+        }
+      }
+
+      let body;
+      if (method === 'POST' || method === 'PATCH') {
+        if (bodyText.trim()) {
+          try {
+            body = JSON.parse(bodyText);
+          } catch {
+            explorerError = 'Body must be valid JSON.';
+            explorerBusy = false;
+            return;
+          }
+        }
+      }
+
+      const out = await restRequest(selectedTable, method, {
+        select: selectParam,
         filterParams,
-        order: order || undefined,
-        limit,
-        offset,
+        order: orderParam,
+        limit: limitParam,
+        offset: offsetParam,
+        extraParams,
+        countExact: method === 'GET' && countExact,
+        return: method !== 'GET' && returnMode ? returnMode : undefined,
+        body,
       });
       explorerResult = out.result;
       explorerUrl = out.url;
       explorerMs = out.roundTripMs;
+      explorerStatus = out.status;
+      explorerContentRange = out.contentRange;
+      explorerPreference = out.preferenceApplied;
     } catch (e) {
       explorerError = e.message ?? String(e);
     } finally {
@@ -371,94 +462,207 @@
 
           <section class="block">
             <div class="explorer-head">
-              <h4>Try it — GET explorer</h4>
+              <h4>Try it — explorer</h4>
               <button class="ghost" onclick={() => (explorerOpen = !explorerOpen)}>
                 {explorerOpen ? 'Hide' : 'Open'}
               </button>
             </div>
             {#if explorerOpen}
               <div class="explorer">
-                <label class="field">
-                  <span class="flabel">select (comma-separated columns, blank = *)</span>
-                  <input bind:value={selectCols} placeholder={cols.map((c) => c.name).join(',')} class="mono-input" />
-                </label>
-
-                <div class="field">
-                  <span class="flabel">Filters</span>
-                  {#each filters as f, i}
-                    <div class="filter-row">
-                      <select bind:value={f.column}>
-                        {#each cols as c}<option value={c.name}>{c.name}</option>{/each}
-                      </select>
-                      <select value={f.op} onchange={(e) => onOpChange(i, e.target.value)}>
-                        {#each FILTER_OPS as op}<option value={op}>{op}</option>{/each}
-                      </select>
-                      {#if f.op === 'is'}
-                        <select bind:value={f.value}>
-                          <option value="null">null</option>
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
-                      {:else}
-                        <input bind:value={f.value} placeholder={f.op === 'in' ? '1,2,3' : 'value'} class="mono-input" />
-                      {/if}
-                      <button class="del-btn" onclick={() => removeFilter(i)}>✕</button>
-                    </div>
-                  {/each}
-                  <button class="ghost small-btn" onclick={addFilter}>+ Add filter</button>
+                <div class="method-row">
+                  <span class="flabel">Method</span>
+                  <div class="method-tabs">
+                    {#each ['GET', 'POST', 'PATCH', 'DELETE'] as m}
+                      <button
+                        type="button"
+                        class="method-tab"
+                        class:active={method === m}
+                        onclick={() => (method = m)}
+                      >{m}</button>
+                    {/each}
+                  </div>
                 </div>
 
-                <div class="field">
-                  <span class="flabel">Order</span>
-                  {#each orderRows as o, i}
-                    <div class="filter-row">
-                      <select bind:value={o.column}>
-                        {#each cols as c}<option value={c.name}>{c.name}</option>{/each}
-                      </select>
-                      <select bind:value={o.desc}>
-                        <option value={false}>asc</option>
-                        <option value={true}>desc</option>
-                      </select>
-                      <button class="del-btn" onclick={() => removeOrder(i)}>✕</button>
-                    </div>
-                  {/each}
-                  <button class="ghost small-btn" onclick={addOrder}>+ Add order</button>
-                </div>
+                {#if method === 'GET'}
+                  <label class="field">
+                    <span class="flabel">select (comma-separated columns, blank = *)</span>
+                    <input bind:value={selectCols} placeholder={cols.map((c) => c.name).join(',')} class="mono-input" />
+                  </label>
+                {/if}
 
-                {#if embedOptionsFor(selectedTable).length}
+                {#if method !== 'POST'}
                   <div class="field">
-                    <span class="flabel">Embedded resources (C2 — <code>name(col,...)</code>, blank = all columns)</span>
-                    {#each embeds as e, i}
+                    <span class="flabel">Filters{method !== 'GET' ? ' (target which rows)' : ''}</span>
+                    {#each filters as f, i}
                       <div class="filter-row">
-                        <select bind:value={e.name}>
-                          {#each embedOptionsFor(selectedTable) as opt}<option value={opt.name}>{opt.name} ({opt.kind})</option>{/each}
+                        <select bind:value={f.column}>
+                          {#each cols as c}<option value={c.name}>{c.name}</option>{/each}
                         </select>
-                        <input bind:value={e.cols} placeholder="e.g. id,name" class="mono-input" />
-                        <button class="del-btn" onclick={() => removeEmbed(i)}>✕</button>
+                        <select value={f.op} onchange={(e) => onOpChange(i, e.target.value)}>
+                          {#each FILTER_OPS as op}<option value={op}>{op}</option>{/each}
+                        </select>
+                        {#if f.op === 'is'}
+                          <select bind:value={f.value}>
+                            <option value="null">null</option>
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        {:else}
+                          <input bind:value={f.value} placeholder={f.op === 'in' ? '1,2,3' : 'value'} class="mono-input" />
+                        {/if}
+                        <button class="del-btn" onclick={() => removeFilter(i)}>✕</button>
                       </div>
                     {/each}
-                    <button class="ghost small-btn" onclick={addEmbed}>+ Add embed</button>
+                    <button class="ghost small-btn" onclick={addFilter}>+ Add filter</button>
                   </div>
                 {/if}
 
-                <div class="limit-row">
+                {#if method === 'POST' || method === 'PATCH'}
                   <label class="field">
-                    <span class="flabel">limit</span>
-                    <input type="number" min="0" bind:value={limit} class="num-input" />
+                    <span class="flabel">Body (JSON {method === 'POST' ? 'object or array of objects' : 'object of assignments'})</span>
+                    <textarea bind:value={bodyText} rows="3" class="mono-input code-area"
+                      placeholder={method === 'POST'
+                        ? JSON.stringify(Object.fromEntries(cols.filter((c) => !c.primaryKey).slice(0, 2).map((c) => [c.name, exampleValue(c)])))
+                        : JSON.stringify(Object.fromEntries(cols.filter((c) => !c.primaryKey).slice(0, 1).map((c) => [c.name, exampleValue(c)])))}
+                      spellcheck="false"></textarea>
                   </label>
-                  <label class="field">
-                    <span class="flabel">offset</span>
-                    <input type="number" min="0" bind:value={offset} class="num-input" />
+                {/if}
+
+                {#if method === 'GET'}
+                  <div class="field">
+                    <span class="flabel">Order</span>
+                    {#each orderRows as o, i}
+                      <div class="filter-row">
+                        <select bind:value={o.column}>
+                          {#each cols as c}<option value={c.name}>{c.name}</option>{/each}
+                        </select>
+                        <select bind:value={o.desc}>
+                          <option value={false}>asc</option>
+                          <option value={true}>desc</option>
+                        </select>
+                        <button class="del-btn" onclick={() => removeOrder(i)}>✕</button>
+                      </div>
+                    {/each}
+                    <button class="ghost small-btn" onclick={addOrder}>+ Add order</button>
+                  </div>
+
+                  {#if embedOptionsFor(selectedTable).length}
+                    <div class="field">
+                      <span class="flabel">Embedded resources (C2 — <code>name(col,...)</code>, blank = all columns)</span>
+                      {#each embeds as e, i}
+                        {@const relTable = relTableForEmbed(e.name)}
+                        {@const relCols = relTable ? columnsFor(relTable) : []}
+                        <div class="embed-card">
+                          <div class="filter-row">
+                            <select value={e.name} onchange={(ev) => updateEmbed(i, { name: ev.target.value })}>
+                              {#each embedOptionsFor(selectedTable) as opt}<option value={opt.name}>{opt.name} ({opt.kind})</option>{/each}
+                            </select>
+                            <input value={e.cols} oninput={(ev) => updateEmbed(i, { cols: ev.target.value })} placeholder="e.g. id,name" class="mono-input" />
+                            <button class="del-btn" onclick={() => removeEmbed(i)}>✕</button>
+                          </div>
+                          <!-- item 136: per-embed filter/order/limit/offset, dotted <embed>.<param> -->
+                          <div class="embed-sub">
+                            <span class="sub-label">filter</span>
+                            {#each e.filters as f, j}
+                              <div class="filter-row">
+                                <select value={f.column} onchange={(ev) => updateEmbed(i, { filters: e.filters.map((ff, fj) => fj === j ? { ...ff, column: ev.target.value } : ff) })}>
+                                  {#each relCols as c}<option value={c.name}>{c.name}</option>{/each}
+                                </select>
+                                <select value={f.op} onchange={(ev) => onEmbedOpChange(i, j, ev.target.value)}>
+                                  {#each FILTER_OPS as op}<option value={op}>{op}</option>{/each}
+                                </select>
+                                {#if f.op === 'is'}
+                                  <select value={f.value} onchange={(ev) => updateEmbed(i, { filters: e.filters.map((ff, fj) => fj === j ? { ...ff, value: ev.target.value } : ff) })}>
+                                    <option value="null">null</option>
+                                    <option value="true">true</option>
+                                    <option value="false">false</option>
+                                  </select>
+                                {:else}
+                                  <input value={f.value} oninput={(ev) => updateEmbed(i, { filters: e.filters.map((ff, fj) => fj === j ? { ...ff, value: ev.target.value } : ff) })} placeholder={f.op === 'in' ? '1,2,3' : 'value'} class="mono-input" />
+                                {/if}
+                                <button class="del-btn" onclick={() => removeEmbedFilter(i, j)}>✕</button>
+                              </div>
+                            {/each}
+                            <button class="ghost small-btn" onclick={() => addEmbedFilter(i)} disabled={!e.name}>+ embed filter</button>
+                          </div>
+                          <div class="embed-sub">
+                            <span class="sub-label">order</span>
+                            {#each e.order as o, j}
+                              <div class="filter-row">
+                                <select value={o.column} onchange={(ev) => updateEmbed(i, { order: e.order.map((oo, oj) => oj === j ? { ...oo, column: ev.target.value } : oo) })}>
+                                  {#each relCols as c}<option value={c.name}>{c.name}</option>{/each}
+                                </select>
+                                <select value={o.desc} onchange={(ev) => updateEmbed(i, { order: e.order.map((oo, oj) => oj === j ? { ...oo, desc: ev.target.value === 'true' } : oo) })}>
+                                  <option value={false}>asc</option>
+                                  <option value={true}>desc</option>
+                                </select>
+                                <button class="del-btn" onclick={() => removeEmbedOrder(i, j)}>✕</button>
+                              </div>
+                            {/each}
+                            <button class="ghost small-btn" onclick={() => addEmbedOrder(i)} disabled={!e.name}>+ embed order</button>
+                          </div>
+                          <div class="embed-sub limit-row">
+                            <label class="field">
+                              <span class="flabel">embed limit</span>
+                              <input type="number" min="0" value={e.limitVal} oninput={(ev) => updateEmbed(i, { limitVal: ev.target.value })} class="num-input" />
+                            </label>
+                            <label class="field">
+                              <span class="flabel">embed offset</span>
+                              <input type="number" min="0" value={e.offsetVal} oninput={(ev) => updateEmbed(i, { offsetVal: ev.target.value })} class="num-input" />
+                            </label>
+                          </div>
+                          <p class="embed-hint">Per-parent — each parent's <code>{e.name || '…'}</code> array is sliced independently (lateral), not a global cap.</p>
+                        </div>
+                      {/each}
+                      <button class="ghost small-btn" onclick={addEmbed}>+ Add embed</button>
+                    </div>
+                  {/if}
+
+                  <div class="limit-row">
+                    <label class="field">
+                      <span class="flabel">limit</span>
+                      <input type="number" min="0" bind:value={limit} class="num-input" />
+                    </label>
+                    <label class="field">
+                      <span class="flabel">offset</span>
+                      <input type="number" min="0" bind:value={offset} class="num-input" />
+                    </label>
+                    <label class="check-field">
+                      <input type="checkbox" bind:checked={countExact} />
+                      <code>Prefer: count=exact</code>
+                    </label>
+                  </div>
+                {:else}
+                  <label class="field prefer-field">
+                    <span class="flabel"><code>Prefer: return=</code> (item 139)</span>
+                    <select bind:value={returnMode}>
+                      <option value="">(default — {'{'}type,count{'}'} body)</option>
+                      <option value="representation">representation (affected rows back)</option>
+                      <option value="minimal">minimal (empty body)</option>
+                    </select>
                   </label>
+                {/if}
+
+                <div class="run-row">
                   <button onclick={runExplorer} disabled={explorerBusy}>{explorerBusy ? 'Running…' : 'Run'}</button>
                 </div>
 
-                {#if explorerUrl}<p class="explorer-url mono">{explorerUrl}{explorerMs != null ? ` · ${Math.round(explorerMs)} ms` : ''}</p>{/if}
+                {#if explorerUrl}
+                  <p class="explorer-url mono">
+                    {method} {explorerUrl}{explorerMs != null ? ` · ${Math.round(explorerMs)} ms` : ''}{explorerStatus != null ? ` · ${explorerStatus}` : ''}
+                  </p>
+                {/if}
+                {#if explorerContentRange}<p class="explorer-meta mono">Content-Range: {explorerContentRange}</p>{/if}
+                {#if explorerPreference}<p class="explorer-meta mono">Preference-Applied: {explorerPreference}</p>{/if}
                 {#if explorerError}<p class="err">{explorerError}</p>{/if}
-                {#if explorerResult}
+                {#if explorerResult === null && explorerStatus != null && !explorerError}
+                  <p class="muted small">Empty body ({explorerStatus}) — matches <code>return=minimal</code> / a plain mutation's usual shape.</p>
+                {:else if explorerResult?.type === 'rows'}
                   <div class="explorer-result">
                     <ResultsGrid result={explorerResult} />
                   </div>
+                {:else if explorerResult}
+                  <p class="mutate-summary mono">{JSON.stringify(explorerResult)}</p>
                 {/if}
               </div>
             {/if}
@@ -568,14 +772,51 @@
     color: var(--text); padding: 6px 12px; font-size: 13px; cursor: pointer; align-self: flex-start;
   }
   .small-btn { padding: 4px 10px; font-size: 12px; }
-  .limit-row button:not(.ghost) {
+  .run-row button:not(.ghost) {
     background: var(--accent); color: #fff; border: none;
     border-radius: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: default; }
 
+  .field textarea {
+    padding: 6px 9px; font-size: 13px; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; resize: vertical;
+  }
+  .code-area { font-size: 12px; }
+
+  .method-row { display: flex; align-items: center; gap: 10px; }
+  .method-tabs { display: flex; gap: 4px; }
+  .method-tab {
+    padding: 4px 12px; font-size: 12px; font-family: var(--mono); font-weight: 600;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+    color: var(--muted); cursor: pointer;
+  }
+  .method-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .embed-card {
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 6px;
+    background: var(--panel-alt); display: flex; flex-direction: column; gap: 4px;
+  }
+  .embed-sub { padding-left: 10px; border-left: 2px solid var(--border); }
+  .sub-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); display: block; margin-bottom: 2px;
+  }
+  .embed-hint { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+  .embed-hint code { font-family: var(--mono); background: var(--panel); border-radius: 3px; padding: 0 3px; }
+
+  .run-row { display: flex; align-items: center; gap: 10px; }
+  .check-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+  .check-field code { font-family: var(--mono); background: var(--panel-alt); border-radius: 3px; padding: 0 3px; }
+  .prefer-field { max-width: 320px; }
+
   .explorer-url { font-size: 11px; color: var(--muted); word-break: break-all; margin: 0; }
+  .explorer-meta { font-size: 11px; color: var(--accent); margin: 0; }
   .explorer-result { border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 360px; }
+  .mutate-summary {
+    font-size: 12px; background: var(--panel-alt); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; margin: 0;
+  }
 
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
