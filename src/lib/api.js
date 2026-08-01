@@ -1645,3 +1645,47 @@ export async function deleteChannelPolicy(topicPattern, operation) {
   if (!res.ok) throw await toApiError(res);
 }
 
+// ---- email auth flows — recovery + magic link (item 138, PR #241) --------
+// POST /auth/recover and POST /auth/magiclink always return 200 regardless
+// of whether `email` is a known account (no-account-enumeration contract) —
+// this module surfaces that response as-is rather than trying to infer
+// account existence from it. `email` is looked up directly as a username
+// today (no users.email column yet — see this module's README contract
+// note). Redemption (verify/magiclink-verify) tokens are single-use and
+// short-lived server-side.
+
+async function authOkPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json(); // { ok: true }
+}
+
+/** POST /auth/recover — request a password-reset email. Always 200. */
+export async function authRecover(email) {
+  return authOkPost('/auth/recover', { email });
+}
+
+/** POST /auth/verify — redeem a recovery token for a new password; revokes every existing session. */
+export async function authVerifyRecovery(token, newPassword) {
+  return authOkPost('/auth/verify', { token, new_password: newPassword });
+}
+
+/** POST /auth/magiclink — request a magic sign-in link email. Always 200. */
+export async function authMagicLink(email) {
+  return authOkPost('/auth/magiclink', { email });
+}
+
+/** POST /auth/magiclink/verify — redeem a magic-link token for a real session. */
+export async function authMagicLinkVerify(token) {
+  return toSession(await authFlowPost('/auth/magiclink/verify', { token }));
+}

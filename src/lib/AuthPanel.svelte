@@ -5,13 +5,14 @@
     listSessions, revokeSession,
     mfaEnroll, mfaVerify, mfaChallenge, mfaDisable,
     getOauthProviders, oauthAuthorizeUrl, oauthCallback,
+    authRecover, authVerifyRecovery, authMagicLink, authMagicLinkVerify,
     BASE_URL,
   } from './api.js';
 
   // Authentication panel (Workstream G1 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
   // Live over the engine's real, fully-merged contract (items 100/121/122/4,
-  // 127, 128, through PR #230 on unidb main):
+  // 127, 128, 138, through PR #241 on unidb main):
   //   - GET /auth/meta + GET /auth/whoami (item 100).
   //   - Users: list/create-with-password/delete, plus reset-password for an
   //     EXISTING user via `ALTER USER … PASSWORD '…'` (item 4).
@@ -25,6 +26,19 @@
   //     reflecting `whoami.mfa_enabled`.
   //   - OAuth social login (item 128, D1): "Sign in with Google/GitHub"
   //     against feature-detected providers.
+  //   - Email auth flows (item 138): trigger password-recovery / magic-link
+  //     emails and redeem the resulting token, below the credentialed flow
+  //     tester. `POST /auth/recover`/`POST /auth/magiclink` always return
+  //     200 (no-account-enumeration contract) — this panel shows that
+  //     uniform response as-is, never tries to infer whether the address
+  //     was a real account. There is NO route to read back what was sent
+  //     (the default `UNIDB_EMAIL_TRANSPORT=log` writes to a server-side
+  //     dev-inbox *file*, `<data_dir>/email-dev-inbox.jsonl`) — a static SPA
+  //     can't read server files, so redemption below needs the token pasted
+  //     in by hand (e.g. copied from server logs/the dev-inbox file in a
+  //     terminal) rather than faking a "check your inbox" UI this Studio
+  //     can't actually back. See README's "Contract notes" for the
+  //     `GET /auth/dev-inbox` gap this would close.
   // Per CLAUDE.md, nothing here is fabricated: anything the engine doesn't
   // support is an explicit "not available" state, never a dead-looking form.
   //
@@ -426,10 +440,100 @@
     }
   }
 
-  // No remaining "not available" gaps for G1 as of PR #230 — password
-  // reset, session listing/revoke, MFA enroll/verify/disable, and OAuth
-  // sign-in are all live below (OAuth buttons are feature-detected per
-  // provider and simply absent when unconfigured).
+  // ── email auth flows — recovery + magic link (item 138) ──────────────────
+  // `email` is looked up directly as a username today (no users.email
+  // column yet — see README's "Contract notes"). Both request-step routes
+  // (recover/magiclink) always return {ok:true}, so `recoverSent`/
+  // `magiclinkSent` just reflect "the request was accepted", never "the
+  // account exists" — that distinction is the whole point of the
+  // no-enumeration contract, and the UI copy says so.
+  let recoverEmail = $state('');
+  let recoverBusy  = $state(false);
+  let recoverError = $state(null);
+  let recoverSent  = $state(false);
+
+  async function doRecover() {
+    recoverError = null;
+    recoverSent = false;
+    if (!recoverEmail.trim()) { recoverError = 'Enter an email/username.'; return; }
+    recoverBusy = true;
+    try {
+      await authRecover(recoverEmail.trim());
+      recoverSent = true;
+    } catch (e) {
+      recoverError = e.message ?? String(e);
+    } finally {
+      recoverBusy = false;
+    }
+  }
+
+  let recoverToken    = $state('');
+  let recoverNewPass  = $state('');
+  let recoverVerifyBusy  = $state(false);
+  let recoverVerifyError = $state(null);
+  let recoverVerifyDone  = $state(false);
+
+  async function doRecoverVerify() {
+    recoverVerifyError = null;
+    recoverVerifyDone = false;
+    if (!recoverToken.trim() || !recoverNewPass) { recoverVerifyError = 'Enter both the token and a new password.'; return; }
+    recoverVerifyBusy = true;
+    try {
+      await authVerifyRecovery(recoverToken.trim(), recoverNewPass);
+      recoverVerifyDone = true;
+      recoverToken = '';
+      recoverNewPass = '';
+    } catch (e) {
+      recoverVerifyError = e.message ?? String(e);
+    } finally {
+      recoverVerifyBusy = false;
+    }
+  }
+
+  let magicEmail = $state('');
+  let magicBusy  = $state(false);
+  let magicError = $state(null);
+  let magicSent  = $state(false);
+
+  async function doMagicLink() {
+    magicError = null;
+    magicSent = false;
+    if (!magicEmail.trim()) { magicError = 'Enter an email/username.'; return; }
+    magicBusy = true;
+    try {
+      await authMagicLink(magicEmail.trim());
+      magicSent = true;
+    } catch (e) {
+      magicError = e.message ?? String(e);
+    } finally {
+      magicBusy = false;
+    }
+  }
+
+  let magicToken = $state('');
+  let magicVerifyBusy  = $state(false);
+  let magicVerifyError = $state(null);
+
+  async function doMagicVerify() {
+    magicVerifyError = null;
+    if (!magicToken.trim()) { magicVerifyError = 'Enter the token from the magic-link email.'; return; }
+    magicVerifyBusy = true;
+    try {
+      applyFlowResult(await authMagicLinkVerify(magicToken.trim()));
+      magicToken = '';
+    } catch (e) {
+      magicVerifyError = e.message ?? String(e);
+    } finally {
+      magicVerifyBusy = false;
+    }
+  }
+
+  // No remaining "not available" gaps for G1 as of PR #241 — password
+  // reset, session listing/revoke, MFA enroll/verify/disable, OAuth
+  // sign-in, and password-recovery/magic-link are all live below (OAuth
+  // buttons are feature-detected per provider and simply absent when
+  // unconfigured; there's no way to fetch a sent email's contents — see the
+  // dev-inbox note in the header comment).
 </script>
 
 <div class="auth">
@@ -717,6 +821,85 @@
       {/if}
     </section>
 
+    <section class="card">
+      <h3>Email auth flows</h3>
+      <p class="muted small">
+        Password-recovery and magic-link (passwordless) sign-in, over the real
+        <code>POST /auth/{'{recover,verify,magiclink,magiclink/verify}'}</code> routes. Both
+        request-step calls below always report success — a registered vs. unregistered
+        email/username is indistinguishable by design (no account enumeration).
+      </p>
+
+      <div class="flow-grid">
+        <div class="flow-form">
+          <span class="flabel-section">Password recovery</span>
+          <label class="field">
+            <span class="flabel">Email / username</span>
+            <input bind:value={recoverEmail} placeholder="alice" spellcheck="false" />
+          </label>
+          <div class="flow-btns">
+            <button onclick={doRecover} disabled={recoverBusy || !recoverEmail}>
+              {recoverBusy ? 'Sending…' : 'Send recovery email'}
+            </button>
+          </div>
+          {#if recoverSent}<p class="ok-note">Request accepted (200) — if that account exists, an email was sent.</p>{/if}
+          {#if recoverError}<p class="err small">{recoverError}</p>{/if}
+
+          <label class="field email-redeem">
+            <span class="flabel">Recovery token (from the email/dev-inbox)</span>
+            <input bind:value={recoverToken} placeholder="opaque hex token" spellcheck="false" class="mono-input" />
+          </label>
+          <label class="field">
+            <span class="flabel">New password</span>
+            <input type="password" bind:value={recoverNewPass} />
+          </label>
+          <div class="flow-btns">
+            <button class="ghost" onclick={doRecoverVerify} disabled={recoverVerifyBusy || !recoverToken || !recoverNewPass}>
+              {recoverVerifyBusy ? 'Resetting…' : 'Redeem token'}
+            </button>
+          </div>
+          {#if recoverVerifyDone}<p class="ok-note">Password reset. Every existing session for that user is now revoked.</p>{/if}
+          {#if recoverVerifyError}<p class="err small">{recoverVerifyError}</p>{/if}
+        </div>
+
+        <div class="flow-form">
+          <span class="flabel-section">Magic link</span>
+          <label class="field">
+            <span class="flabel">Email / username</span>
+            <input bind:value={magicEmail} placeholder="alice" spellcheck="false" />
+          </label>
+          <div class="flow-btns">
+            <button onclick={doMagicLink} disabled={magicBusy || !magicEmail}>
+              {magicBusy ? 'Sending…' : 'Send magic link'}
+            </button>
+          </div>
+          {#if magicSent}<p class="ok-note">Request accepted (200) — if that account exists, an email was sent.</p>{/if}
+          {#if magicError}<p class="err small">{magicError}</p>{/if}
+
+          <label class="field email-redeem">
+            <span class="flabel">Magic-link token (from the email/dev-inbox)</span>
+            <input bind:value={magicToken} placeholder="opaque hex token" spellcheck="false" class="mono-input" />
+          </label>
+          <div class="flow-btns">
+            <button class="ghost" onclick={doMagicVerify} disabled={magicVerifyBusy || !magicToken}>
+              {magicVerifyBusy ? 'Redeeming…' : 'Redeem token → sign in'}
+            </button>
+          </div>
+          {#if magicVerifyError}<p class="err small">{magicVerifyError}</p>{/if}
+          <p class="muted small">A redeemed token's session appears in the token panel above.</p>
+        </div>
+      </div>
+
+      <p class="gap-note">
+        <strong>Contract gap:</strong> with the default <code>UNIDB_EMAIL_TRANSPORT=log</code>,
+        the server writes the rendered email to a server-side file
+        (<code>&lt;data_dir&gt;/email-dev-inbox.jsonl</code>) instead of sending it — there is no
+        <code>GET /auth/dev-inbox</code> route to read that file back over HTTP, and this Studio is
+        a static SPA with no server-side access of its own. Paste a token above by copying it from
+        that file / server logs directly. See README's "Contract notes".
+      </p>
+    </section>
+
   {/if}
 </div>
 
@@ -950,6 +1133,14 @@
   .flow-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
   @media (max-width: 640px) { .flow-grid { grid-template-columns: 1fr; } }
   .flow-form { display: flex; flex-direction: column; gap: 8px; }
+  .flabel-section { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .email-redeem { margin-top: 8px; }
+  .gap-note {
+    margin: 10px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5;
+    background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .gap-note code { font-family: var(--mono); background: var(--panel); border-radius: 3px; padding: 0 3px; }
   .flow-btns { display: flex; gap: 8px; }
   .flow-btns button:not(.ghost) {
     background: var(--accent); color: #fff; border: none;
