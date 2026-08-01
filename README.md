@@ -35,11 +35,11 @@ Five panels, all over `POST /sql` and `GET /tables`:
    only multi-statement-atomicity mechanism). Reports total wall-clock and
    rows/sec.
 
-## Authorization panels (Roles, Policies, Authentication, API Docs, GraphQL)
+## Authorization panels (Roles, Policies, Authentication, API Docs, GraphQL, Users, Webhooks, Channel Authz)
 
-Five more panels cover Supabase-parity auth/authorization/API surface,
-fully live against unidb main's merged auth + auto-REST + GraphQL contract
-(PR #222 through #234). See
+Eight more panels cover Supabase-parity auth/authorization/API surface,
+fully live against unidb main's merged auth + auto-REST + GraphQL + realtime
++ webhooks contract (PR #222 through #245). See
 [`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
 full plan and per-panel verification notes. There are no remaining
 feature-detect stubs in any of these panels.
@@ -72,22 +72,49 @@ feature-detect stubs in any of these panels.
   and **OAuth sign-in** buttons for Google/GitHub, each independently
   feature-detected and hidden when its provider isn't configured server-side.
   Tokens shown in the flow tester are kept in-memory only, never persisted
-  or swapped into the Studio's own admin session token.
+  or swapped into the Studio's own admin session token. **Email auth
+  flows** — password recovery (`POST /auth/recover` → `POST /auth/verify`)
+  and magic-link sign-in (`POST /auth/magiclink` → `POST
+  /auth/magiclink/verify`), both request steps showing the real uniform
+  `{ok:true}` no-enumeration response. See "Contract notes" below for the
+  redemption-token limitation.
 - **API Docs** — a live schema + curl-snippet viewer generated from the
-  engine's own `GET /rest/v1` OpenAPI 3 document, plus a **GET explorer**
-  exercising the real `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/
-  in/is`)/`order=`/`limit`/`offset` query surface over `/rest/v1/<table>`
-  and rendering results live — including **embedded resources**
-  (`?select=id,customer(name)` forward, `?select=id,orders(id,total)`
-  reverse), with embed options derived from real foreign-key metadata, not
-  guessed.
+  engine's own `GET /rest/v1` OpenAPI 3 document, plus a full **GET/POST/
+  PATCH/DELETE explorer** exercising the real `select=`/filter (`eq/neq/gt/
+  gte/lt/lte/like/ilike/in/is`)/`order=`/`limit`/`offset` query surface over
+  `/rest/v1/<table>` and rendering results live — including **embedded
+  resources** (`?select=id,customer(name)` forward, `?select=id,
+  orders(id,total)` reverse) with per-embed filter/order/limit/offset
+  (dotted `<embed>.<col>=` params), embed options derived from real
+  foreign-key metadata, and `Prefer: count=exact` / `return=representation|
+  minimal` support with the real `Content-Range` total and
+  `Preference-Applied` echo shown.
 - **GraphQL** — a schema browser over a standard introspection query against
-  the engine's `POST /graphql` (schema-derived, read-only v1), a callout
+  the engine's `POST /graphql` (schema-derived, read + write), a callout
   surfacing unidb's two differentiators over a relational-only
   Supabase/pg_graphql stack (`edges(type, direction)` graph traversal;
   root `near_<table>(vector, k)` vector similarity), starter queries built
-  from the real schema, and a query editor that runs real queries and
-  renders the real `{data, errors}` response.
+  from the real schema, a query editor that runs real queries and renders
+  the real `{data, errors}` response, and **mutations**
+  (`insert_/update_/delete_<table>`) with typed starter bodies built from
+  each table's real scalar columns, resolving through the same enforced
+  write path as `/rest/v1`/`/sql`.
+- **Users** — superuser user management over `/auth/admin/users`: paginated
+  list with real total counts, create/edit/delete, ban/unban, and JSON
+  editors for `app_metadata`/`user_metadata`. Never renders a password hash
+  or session token; the last-superuser-lockout guard is enforced
+  server-side and surfaced verbatim, not reimplemented client-side.
+- **Webhooks** — database webhook management over `/webhooks`: target URL,
+  table pattern, event selection, a write-only signing secret, and enable/
+  disable, plus a help block documenting the real CDC-envelope body and
+  `X-Unidb-Signature` HMAC contract. The secret is never shown back — `GET`
+  only ever returns `has_signing_secret: true|false`.
+- **Channel Authz** — realtime channel authorization policies over
+  `/realtime/policies` (`topic_pattern`, `operation`, `allowed_roles`),
+  structurally mirroring the Policies panel's role-chip picker, plus a
+  documentation-only note on the `UNIDB_REALTIME_REQUIRE_AUTHZ` posture
+  (this is a server env var with no read API, so the Studio explains both
+  postures rather than claiming to know which one is live).
 
 ## Storage panel
 
@@ -166,6 +193,32 @@ token's expiry. The endpoint exists only in the dev server, never in builds.
   one transaction per request to cut round-trips). It is fine for demo-sized
   files, not for large data loads. Values are inserted as quoted string literals
   and coerced to each column's type by the engine.
+
+## Contract notes
+
+Gaps found between the documented/expected contract and what the engine
+actually exposes, discovered while building the panels above. These are
+flagged here rather than worked around with invented behavior, per this
+repo's `CLAUDE.md` rule.
+
+- **No route to read back a sent recovery/magic-link email (item 138).**
+  The default `UNIDB_EMAIL_TRANSPORT=log` writes the rendered email to a
+  server-side file (`<data_dir>/email-dev-inbox.jsonl`) with no
+  corresponding HTTP route (e.g. a `GET /auth/dev-inbox`) to read it back.
+  A static SPA can't read server-local files, so the Email auth flows UI
+  in the Authentication panel requires the recovery/magic-link token to be
+  pasted in by hand for redemption rather than offering a "check your
+  inbox" experience. This is a real engine gap, not a Studio bug — filing
+  a `GET /auth/dev-inbox` (dev-transport only) route would close it.
+- **OAuth provider presets beyond Google/GitHub (item 143) do not exist.**
+  A prior task assumed item 143 added preset configuration for apple/
+  azure/gitlab/discord/facebook providers. Grepping `../unidb/docs/
+  REST_API.md`, `../unidb/docs/backlog/backlog_index.md`, and
+  `../unidb/src/server/oauth.rs` found no trace of item 143 or of any
+  provider beyond Google/GitHub — `oauth.rs`'s `from_env()` hardcodes the
+  provider loop to exactly `["google", "github"]`. No preset UI was built
+  for the unsupported providers; the existing Google/GitHub buttons (item
+  128) remain the full OAuth surface until the engine adds more providers.
 
 ## Notes / known limitations
 

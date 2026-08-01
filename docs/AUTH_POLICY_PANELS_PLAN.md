@@ -1,16 +1,20 @@
 # Studio auth / policies / roles / API-docs panels (Workstream G)
 
-**Status:** SIX PANELS FULLY LIVE, against unidb main's fully merged
-Supabase-parity surface (PR #222 through #234): password
+**Status:** NINE PANELS FULLY LIVE, against unidb main's fully merged
+Supabase-parity surface (PR #222 through #245): password
 login/signup/refresh/logout + session listing/revoke, `ALTER USER …
 PASSWORD`, `auth.uid()`/`auth.jwt()`, built-in roles, role-scoped policies
 with a readable `target_roles`, column-level grants, production JWT issuer +
 asymmetric verify/JWKS, auth rate-limiting, realtime per-subscriber RLS
 (E1), the auto REST API `/rest/v1/<table>` + `GET /rest/v1` OpenAPI doc +
-C2 embedded-resource expansion, per-object storage authorization (F1), TOTP
-MFA (item 127, D4), OAuth 2.0 social login (item 128, D1), and a
-schema-derived GraphQL API (item 130, C4). No feature-detect stubs remain
-in any of the six panels (updated 2026-08-01).
+C2 embedded-resource expansion + item-136 per-embed filter/order/limit/
+offset + item-139 `Prefer` (`count=exact`, `return=representation|
+minimal`), per-object storage authorization (F1), TOTP MFA (item 127, D4),
+OAuth 2.0 social login (item 128, D1), a schema-derived GraphQL API (item
+130, C4) with item-133 mutations, email auth flows (item 138), a
+superuser user-management panel (item 142), database webhooks (item 141),
+and realtime channel authorization policies (item 140). No feature-detect
+stubs remain in any panel (updated 2026-08-01, second session).
 
 **Tracks:** engine roadmap `../unidb/docs/backlog/120_supabase_parity_roadmap.md`
 (Workstream G), which depended on engine workstreams A (121), B (122), C
@@ -144,10 +148,35 @@ against a rebuilt engine (through PR #226), not just read against docs:
   rendered in the flow tester.
 - `api.js` gained `mfaEnroll`/`mfaVerify`/`mfaChallenge`/`mfaDisable`,
   `getOauthProviders`/`oauthAuthorizeUrl`/`oauthCallback`.
+- **Email auth flows** (new this session, item 138, PR #241): password
+  recovery (`POST /auth/recover` → `POST /auth/verify`) and magic-link
+  sign-in (`POST /auth/magiclink` → `POST /auth/magiclink/verify`), both
+  request-step routes shown returning their real, uniform `{ok:true}`
+  regardless of whether the email/username is a known account (the
+  no-enumeration contract — the UI copy says so explicitly rather than
+  implying success means "that account exists"). `email` is looked up
+  directly as a username today (no `users.email` column yet).
+  **Contract gap, not built around:** the default
+  `UNIDB_EMAIL_TRANSPORT=log` writes the rendered email to a server-side
+  file (`<data_dir>/email-dev-inbox.jsonl`) with no HTTP route to read it
+  back — a static SPA can't read server files, so redemption needs the
+  token pasted in by hand rather than a fake "check your inbox" UI. Flagged
+  in README's "Contract notes" as a `GET /auth/dev-inbox` route this Studio
+  needs. `api.js` gained `authRecover`/`authVerifyRecovery`/
+  `authMagicLink`/`authMagicLinkVerify`. **Verified live end-to-end**
+  against a rebuilt engine: recovery request → read the real token from
+  `email-dev-inbox.jsonl` → redemption correctly rejected with the
+  documented `403`-equivalent while the test account was banned (a genuine
+  ban-enforcement demonstration, not a bug) → unbanned → redemption
+  succeeded, password changed, every session revoked; magic-link request →
+  redemption → a real session issued, appearing in the flow tester's token
+  panel exactly like a password login would.
 
 User/role/grant/membership administration beyond credentials stays in the
 Roles tab (G3) — not duplicated here, though both read the same
-`unidb_catalog.users` live so they never disagree.
+`unidb_catalog.users` live so they never disagree. Superuser bulk user
+*administration* (ban, split metadata) is the new Users tab's job (item
+142) — see below.
 
 ### G2 — Policies editor — FULLY LIVE
 Shipped as `src/lib/PoliciesPanel.svelte`:
@@ -201,18 +230,26 @@ shape (`{type:'rows',columns,rows}` etc.), not a bare PostgREST array.
 - **Request snippets**: copy-paste curl for list/filtered/insert/update/
   delete, using a `$TOKEN` shell-variable placeholder rather than embedding
   a real token in a copyable block.
-- **Live GET explorer**: `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/
-  in/is`)/`order=`/`limit`/`offset`, executing real requests. Verified live:
-  a filtered query round-tripped correctly and matched a hand-built curl
-  equivalent.
-- Mutating (POST/PATCH/DELETE) requests are snippets only — matches what was
-  asked for.
+- **Live explorer — now GET/POST/PATCH/DELETE (item 139, PR #242, done this
+  session):** `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/in/is`)/
+  `order=`/`limit`/`offset` on GET; a method-tab switcher + JSON body editor
+  for POST/PATCH; filters double as PATCH/DELETE's row target. `Prefer:
+  count=exact` (GET only) reports the real, RLS-scoped total via
+  `Content-Range`; `Prefer: return=representation|minimal` on a mutation
+  requests the affected rows back (or an empty body) — both echoed back via
+  `Preference-Applied` and shown as-is. A plain mutation's default
+  `{type,count}` body renders as a compact summary; `return=representation`
+  renders through `ResultsGrid` like a GET. `api.js` gained `restRequest`
+  (superseding the old GET-only `restGet`, now removed as dead code).
+  Verified live: GET+embed-filter+count=exact showed a correct
+  `Content-Range` total; PATCH+`return=representation` returned the
+  actually-updated row; DELETE with no `Prefer` returned
+  `{"count":1,"type":"deleted"}`.
 - **Bug found and fixed on the Studio side** (not an engine change):
   `GET /rest/v1`'s `x-primary-key` extension only covers a table-level
   `PRIMARY KEY (...)` constraint, missing the common column-level
   `id BIGINT PRIMARY KEY` form. Each column's own `description: "primary
   key"` is set correctly either way, so `columnsFor()` unions both signals.
-- `api.js` gained `getRestOpenApi`, `restGet`.
 - **Embedded resource expansion, done this session (item 123, C2, PR #227):**
   forward (many-to-one) and reverse (one-to-many) `name(col,col,...)` embeds
   in both the request-snippet builder and the live GET explorer. Embed
@@ -225,11 +262,20 @@ shape (`{type:'rows',columns,rows}` etc.), not a bare PostgREST array.
   C2 documents. Verified live: `orders?select=customers(id,name)` correctly
   nested each order's real customer object; `customers?select=orders(id,total)`
   correctly nested each customer's real order array.
+- **Per-embed filter/order/limit/offset, done this session (item 136, PR
+  #239):** dotted `<embed>.<col>=<op>.<val>` / `<embed>.order=` /
+  `<embed>.limit=` / `<embed>.offset=` params in the live explorer, one
+  filter/order sub-form per embed, columns sourced from the embedded
+  table's own real schema (not the base table's). Verified live:
+  `customers?select=orders()&orders.customer_id=eq.1` correctly nested only
+  that customer's matching orders (an empty `[]` for every other customer),
+  with a real `Content-Range` total from the paired `count=exact` request.
 
-### GraphQL explorer — NEW, FULLY LIVE (item 130, Workstream C4, PR #232)
-Shipped as `src/lib/GraphqlPanel.svelte`, a new sixth panel/tab. Built
-against `POST /graphql` — schema-derived, read-only (v1), mounted under the
-same `require_jwt` layer as every other data-plane route and resolving every
+### GraphQL explorer — FULLY LIVE, now with mutations (item 130/133, C4, PR #232 + #235)
+Shipped as `src/lib/GraphqlPanel.svelte`, a new sixth panel/tab (queries) —
+this session added the mutation side. Built against `POST /graphql` —
+schema-derived, read **and write** (v1), mounted under the same
+`require_jwt` layer as every other data-plane route and resolving every
 field through the identical enforced `/sql`/`/rest/v1` path (same RLS/
 grants, no parallel policy engine — confirmed against `src/server/graphql.rs`
 and REST_API.md's "C4 — GraphQL" section).
@@ -263,6 +309,28 @@ and REST_API.md's "C4 — GraphQL" section).
   `POST /edges` writes had been made against this test schema); the
   `orders` reverse-FK field and `edges` field both showed with correct
   badges on the `customers` type detail view.
+- **Mutations, done this session (item 133, PR #244):** the introspection
+  query now also fetches `mutationType { name }`; a new "Mutations" sidebar
+  section lists every `insert_<table>`/`update_<table>`/`delete_<table>`
+  root field (absent entirely — no section rendered — on a schema with zero
+  eligible tables, matching the engine's own contract of omitting the
+  `Mutation` root in that case). Selecting a mutation shows its full
+  signature and a "Use starter mutation →" button that builds a real, typed
+  starter body from the table's actual scalar fields — `placeholderForField`
+  reads each field's real introspected GraphQL scalar type (`Int`/`Float`/
+  `Boolean`/`String`) off the schema itself rather than guessing, so e.g. an
+  `insert_customers` starter renders `id: 1` as a bare integer and
+  `name: "value"` as a quoted string, never both as strings. `update_`/
+  `delete_` starters include the full filter-argument matrix the schema
+  actually exposes. Every mutation resolves through the identical enforced
+  `INSERT/UPDATE/DELETE … RETURNING` path as `/rest/v1`/`/sql` (confirmed
+  against `src/server/graphql.rs` — no parallel write path). Verified live:
+  `insert_customers` starter against an already-used id returned a real
+  `UNIQUE_VIOLATION` GraphQL error (in `errors`, alongside null `data`, per
+  the same envelope as a query-side error); the same starter against a fresh
+  id succeeded and returned the real inserted row; `update_customers`
+  starter correctly rendered the full filter-arg + `set:` shape from the
+  live schema.
 
 ### Storage panel — authorization surface added (item 120, F1)
 `src/lib/StoragePanel.svelte` / `api.js` updated for the newly-enforced
@@ -294,17 +362,138 @@ per-object model, plus one pre-existing Studio bug fixed along the way:
   behavior, not a 403 on list); that user's attempt to overwrite the same
   key correctly 403s with the friendlier message.
 
+### User management panel — NEW, FULLY LIVE (item 142, PR #243)
+Shipped as `src/lib/UserAdminPanel.svelte`, a new seventh panel/tab ("Users",
+under the Platform nav group). Built against the superuser-only
+`/auth/admin/users` CRUD surface — distinct from G1's own-credential
+sessions view and G3's roles/grants, which stay as they were.
+
+- **List + pagination**: `GET /auth/admin/users?limit&offset`, a real
+  `total` from the unpaginated count (not `users.length`), Prev/Next driven
+  off `offset`/`limit`/`total` rather than guessed page counts. Columns:
+  username (+ superuser pill), roles (chips), status (active/banned pill),
+  metadata (real key counts from `app_metadata`/`user_metadata`, not a
+  fabricated summary), created (formatted from real epoch-seconds, or an
+  explicit "(unknown — predates item 142)" for a `0` value rather than
+  rendering the 1970 epoch as if it were real).
+- **Create**: username/password/superuser/banned + two JSON textareas for
+  `app_metadata`/`user_metadata`, validated client-side before submit so a
+  malformed JSON body never reaches `POST /auth/admin/users`.
+- **Edit**: same shape, password field blank = unchanged (never re-sends a
+  placeholder), `PATCH /auth/admin/users/{username}` does a whole-value
+  replace on either metadata object per the documented contract (not a
+  merge) — the edit modal loads the current value first so a partial edit
+  doesn't silently drop the rest.
+- **Ban/unban**: inline quick-toggle, `PATCH … {banned: true|false}`; the
+  Studio never renders a password hash, session token, or any other secret
+  from the response.
+- **Delete**: confirmation modal, `DELETE /auth/admin/users/{username}`.
+- **Last-superuser-lockout guard**: not reimplemented client-side — the
+  real `403` from either `DELETE` on the last superuser or `PATCH
+  {superuser:false}` on the last superuser is caught and shown verbatim in
+  the modal, so the Studio never claims a lockout the engine didn't
+  actually enforce (and never blocks an action the engine would allow).
+- `api.js` gained `adminListUsers`/`adminGetUser`/`adminCreateUser`/
+  `adminUpdateUser`/`adminDeleteUser`.
+- Verified live end-to-end: create → list shows the new user with correct
+  metadata counts; ban via quick-toggle → status pill flips immediately;
+  edit with a blank password left the existing password usable for login;
+  delete-the-last-superuser attempt correctly rejected with the real `403`
+  text surfaced in the modal, not a generic error.
+
+### Database webhooks panel — NEW, FULLY LIVE (item 141, PR #243)
+Shipped as `src/lib/WebhooksPanel.svelte`, a new eighth panel/tab
+("Webhooks", Platform group). Built against `POST/GET/DELETE /webhooks`.
+
+- **Help block** documenting the real CDC-envelope body shape and the
+  `X-Unidb-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>` header
+  contract, so a user wiring up a receiver doesn't have to cross-reference
+  `REST_API.md` separately.
+- **List**: cards showing id, enabled/disabled pill, a "signed" pill sourced
+  from the real `has_signing_secret` boolean (the engine never returns the
+  secret itself on `GET` — confirmed live via direct `curl`, the Studio
+  relies on this server-side redaction rather than trying to mask it
+  client-side), target URL, table_pattern, and event chips.
+- **Create/edit** (single upsert form, `POST /webhooks`): id (locked once
+  editing an existing webhook), target_url, table_pattern (free text +
+  `<datalist>` populated from the real connected schema's table names, plus
+  a literal `*`), events checkboxes (insert/update/delete), signing_secret
+  (write-only field, blank on edit = left unchanged server-side — the
+  Studio never re-sends a placeholder or re-displays a prior secret),
+  headers (JSON textarea), enabled checkbox.
+- **Quick enable/disable toggle**: re-upserts with only `enabled` flipped,
+  secret field omitted so the existing one is preserved per the documented
+  upsert semantics.
+- **Delete**: confirmation modal, `DELETE /webhooks/{id}`.
+- `api.js` gained `listWebhooks`/`upsertWebhook`/`deleteWebhook`.
+- Verified live: created a webhook with a signing secret → `GET /webhooks`
+  confirmed via curl that the response carries only `has_signing_secret:
+  true`, never the secret value; quick-toggle disable flipped the pill
+  without touching the secret; delete removed the card and a follow-up list
+  no longer showed it.
+
+### Realtime channel authorization panel — NEW, FULLY LIVE (item 140, PR #243)
+Shipped as `src/lib/RealtimeAuthzPanel.svelte`, a new ninth panel/tab
+("Channel Authz", Platform group), structurally mirroring `PoliciesPanel.svelte`.
+Built against `GET/PUT/DELETE /realtime/policies`.
+
+- **List**: cards per `(topic_pattern, operation)` showing the operation as
+  a pill (`publish`/`subscribe`/`presence`/`all`) and `allowed_roles` as
+  role badges (reusing the same `RESERVED_ROLES` constant G3's built-in-role
+  section uses, so built-in vs. custom roles render consistently across
+  panels). Most-specific-topic-match precedence is engine-side, so the
+  Studio lists policies as-is rather than trying to resolve or reorder them.
+- **Create**: topic_pattern text input, operation `<select>`, and the same
+  role-chip multi-select pattern `PoliciesPanel.svelte` already uses for
+  `TO role1, role2` (`toggleNewRole` reused, not reinvented) →
+  `PUT /realtime/policies`.
+- **Delete**: confirmation modal → `DELETE /realtime/policies` (JSON body
+  carrying `topic_pattern`/`operation`, per the documented contract — this
+  route does not take the pair as path segments).
+- **`UNIDB_REALTIME_REQUIRE_AUTHZ` posture note**: shown as static
+  documentation, explicitly labeled as such — this is a server-process
+  environment variable with no corresponding read API, so a static SPA has
+  no way to show its live value. The note explains both postures (off =
+  open-if-no-matching-policy, on = fail-closed) without claiming to know
+  which one the connected server is running. `service_role`/superuser
+  bypass of all policies (audited server-side) is documented in the same
+  note.
+- `api.js` gained `listChannelPolicies`/`putChannelPolicy`/
+  `deleteChannelPolicy`.
+- Verified live: created a `subscribe` policy scoped to `authenticated` on
+  `orders.*` → listed correctly with the role badge; created a second,
+  more-specific policy on `orders.private.*` for `service_role` only →
+  confirmed most-specific-match precedence is engine-side (the Studio just
+  displays both; it does not attempt to resolve precedence itself); delete
+  removed a policy and a follow-up list reflected it immediately.
+
 ## Sequencing
 
-- **Done, prior session:** all four original Workstream-G panels fully live,
+- **Done, first session:** all four original Workstream-G panels fully live,
   plus the Storage panel's F1 authorization surface.
-- **Done, this session (PR #227–#234):** the deferred G4 embedded-resources
+- **Done, second session (PR #227–#234):** the deferred G4 embedded-resources
   example (C2), TOTP MFA in G1 (D4), OAuth social login in G1 (D1), and a
-  brand-new GraphQL explorer panel (C4). No feature-detect stubs remain in
-  any of the six panels.
+  brand-new GraphQL explorer panel (C4).
+- **Done, third session (PR #239–#245):** three brand-new panels — User
+  management (item 142), database webhooks (item 141), realtime channel
+  authorization (item 140) — plus four extended panels — GraphQL mutations
+  (item 133), email auth flows (item 138), `/rest/v1` embed filter/order
+  (item 136) and `Prefer`/`count=exact`/`return=` (item 139) in the API-docs
+  explorer. Nine panels total; no feature-detect stubs remain in any of
+  them.
+- **OAuth provider presets (item 128/143) — engine-side finding, not a
+  Studio gap:** the task that requested this round asked for provider-preset
+  UI covering google/github/apple/azure/gitlab/discord/facebook (item 143).
+  Grepping `../unidb/docs/REST_API.md`, `../unidb/docs/backlog/
+  backlog_index.md`, and `../unidb/src/server/oauth.rs` turned up zero hits
+  for "item 143" or for any provider beyond google/github — `oauth.rs`'s
+  `from_env()` hardcodes the provider loop to exactly `["google", "github"]`.
+  Item 143 does not exist in this engine. Per the hard "never invent
+  routes/params" rule, no preset UI was built for the unsupported providers;
+  G1's existing google/github buttons (item 128, already shipped) are the
+  full extent of OAuth in this Studio until the engine adds more providers.
 - **Available but not requested:** column-level grants UI in the Roles tab
-  (item 112/B5); GraphQL mutations/subscriptions/aggregations (explicitly
-  out of the engine's v1 GraphQL scope per REST_API.md, not a Studio gap).
+  (item 112/B5).
 - **Deliberately not built, documented as a decision (not a silent gap):**
   QR-code rendering for MFA enrollment — see `AuthPanel.svelte`'s header
   comment for the full reasoning (unverifiable hand-rolled QR encoder vs.
