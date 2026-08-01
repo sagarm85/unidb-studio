@@ -859,22 +859,38 @@ export async function mfaDisable(code) {
 
 // ---- OAuth 2.0 social login (item 128, Workstream D1; PR #230) -----------
 // `GET /auth/oauth/{provider}/authorize` is a real browser redirect (302 to
-// the provider) — clicking "Sign in with Google/GitHub" navigates the whole
+// the provider) — clicking "Sign in with <Provider>" navigates the whole
 // tab there directly, it is never fetched. The only thing this module does
-// is *feature-detect* which of the two known provider names
-// (`google`/`github`) are actually configured, so the panel can hide a
-// button that would otherwise 404. Per REST_API.md: an unconfigured
-// provider's authorize/callback routes both return a plain `404`,
-// indistinguishable from a non-existent route — there is no `GET /auth/meta`
-// field listing configured providers. Detection technique: fetch the
-// authorize URL with `redirect: 'manual'` so the browser does NOT follow a
-// real redirect (no navigation, no request ever reaches Google/GitHub) —
-// a configured provider yields an opaque redirect response (immediately
-// discarded), an unconfigured one yields a normal, readable 404. Both
-// authorize/callback are explicitly NOT rate-limited (REST_API.md), so
-// probing both provider names on every panel load is safe.
+// is *feature-detect* which of the seven known preset provider names
+// (`google`/`github`/`apple`/`azure`/`gitlab`/`discord`/`facebook` — the
+// last five added by item 143, part 2) are actually configured, so the
+// panel can hide a button that would otherwise 404. Per REST_API.md: an
+// unconfigured provider's authorize/callback routes both return a plain
+// `404`, indistinguishable from a non-existent route — there is no
+// `GET /auth/meta` field listing configured providers. Detection technique:
+// fetch the authorize URL with `redirect: 'manual'` so the browser does NOT
+// follow a real redirect (no navigation, no request ever reaches the
+// provider) — a configured provider yields an opaque redirect response
+// (immediately discarded), an unconfigured one yields a normal, readable
+// 404. Both authorize/callback are explicitly NOT rate-limited
+// (REST_API.md), so probing all seven provider names on every panel load
+// is safe. Any *other* provider name an operator configures via the
+// `_AUTHORIZE_URL`/etc. env overrides works too (REST_API.md), but has no
+// preset display name — out of scope for this fixed button row.
 
-const OAUTH_PROVIDERS = ['google', 'github'];
+const OAUTH_PROVIDERS = ['google', 'github', 'apple', 'azure', 'gitlab', 'discord', 'facebook'];
+
+// Display labels for the seven presets — cosmetic only, matches REST_API.md's
+// preset table naming ("Microsoft / Azure AD" shortened to fit a button).
+export const OAUTH_PROVIDER_LABELS = {
+  google: 'Google',
+  github: 'GitHub',
+  apple: 'Apple',
+  azure: 'Microsoft',
+  gitlab: 'GitLab',
+  discord: 'Discord',
+  facebook: 'Facebook',
+};
 
 export function oauthAuthorizeUrl(provider) {
   return `${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/authorize`;
@@ -895,9 +911,10 @@ async function oauthProviderConfigured(provider) {
 
 /**
  * Feature-detects which OAuth providers are configured on this server (see
- * above for the technique). Returns `{google: bool, github: bool}`. Never
- * throws — an unreachable server just reports every provider as
- * unconfigured, matching the panel's existing "degrade gracefully" pattern.
+ * above for the technique). Returns one bool per `OAUTH_PROVIDERS` entry,
+ * e.g. `{google: bool, github: bool, apple: bool, ...}`. Never throws — an
+ * unreachable server just reports every provider as unconfigured, matching
+ * the panel's existing "degrade gracefully" pattern.
  */
 export async function getOauthProviders() {
   if (!IS_CONFIGURED) return Object.fromEntries(OAUTH_PROVIDERS.map((p) => [p, false]));
@@ -1688,4 +1705,47 @@ export async function authMagicLink(email) {
 /** POST /auth/magiclink/verify — redeem a magic-link token for a real session. */
 export async function authMagicLinkVerify(token) {
   return toSession(await authFlowPost('/auth/magiclink/verify', { token }));
+}
+
+// ---- dev-inbox read route (item 145) --------------------------------------
+// Studio's Inbucket/Mailpit-equivalent: reads/clears the exact dev-inbox
+// JSONL the `log` email transport writes, so the recovery/magic-link token
+// pasted into the redemption form above (see AuthPanel's header comment)
+// doesn't have to come from a filesystem `tail`. Double-gated server-side
+// (REST_API.md item 145): `404` when the active transport is real SMTP
+// (checked first, so a production deployment never leaks that this admin
+// surface exists at all), then `403 PERMISSION_DENIED` for a non-superuser.
+// This module surfaces both distinctly — `supported:false` for the 404 (a
+// real "not applicable here" state, same posture as every other
+// feature-detected route), while a 403 is re-thrown so the caller can show
+// the real permission error rather than silently hiding a superuser-only
+// feature.
+
+/** GET /auth/dev-inbox?limit= — newest-first captured emails (dev transport + superuser only). */
+export async function getDevInbox({ limit = 50 } = {}) {
+  if (!IS_CONFIGURED) return { supported: false, emails: [] };
+  const qs = new URLSearchParams({ limit: String(limit) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/dev-inbox?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, emails: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, emails: await res.json() };
+}
+
+/** DELETE /auth/dev-inbox — truncate the dev inbox in place. */
+export async function clearDevInbox() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/dev-inbox`, { method: 'DELETE', headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true };
 }

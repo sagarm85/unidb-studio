@@ -4,8 +4,9 @@
     authLogin, authSignup, authRefresh, authLogout,
     listSessions, revokeSession,
     mfaEnroll, mfaVerify, mfaChallenge, mfaDisable,
-    getOauthProviders, oauthAuthorizeUrl, oauthCallback,
+    getOauthProviders, oauthAuthorizeUrl, oauthCallback, OAUTH_PROVIDER_LABELS,
     authRecover, authVerifyRecovery, authMagicLink, authMagicLinkVerify,
+    getDevInbox, clearDevInbox,
     BASE_URL,
   } from './api.js';
 
@@ -24,21 +25,24 @@
   //     `DELETE /auth/sessions/{id}`.
   //   - TOTP MFA (item 127, D4): enroll -> verify -> recovery codes -> disable,
   //     reflecting `whoami.mfa_enabled`.
-  //   - OAuth social login (item 128, D1): "Sign in with Google/GitHub"
-  //     against feature-detected providers.
+  //   - OAuth social login (item 128, D1; presets widened to seven by item
+  //     143 part 2): "Sign in with <Provider>" against all seven built-in
+  //     preset providers (google/github/apple/azure/gitlab/discord/
+  //     facebook), each independently feature-detected — a button is simply
+  //     absent when its provider isn't configured server-side.
   //   - Email auth flows (item 138): trigger password-recovery / magic-link
   //     emails and redeem the resulting token, below the credentialed flow
   //     tester. `POST /auth/recover`/`POST /auth/magiclink` always return
   //     200 (no-account-enumeration contract) — this panel shows that
   //     uniform response as-is, never tries to infer whether the address
-  //     was a real account. There is NO route to read back what was sent
-  //     (the default `UNIDB_EMAIL_TRANSPORT=log` writes to a server-side
-  //     dev-inbox *file*, `<data_dir>/email-dev-inbox.jsonl`) — a static SPA
-  //     can't read server files, so redemption below needs the token pasted
-  //     in by hand (e.g. copied from server logs/the dev-inbox file in a
-  //     terminal) rather than faking a "check your inbox" UI this Studio
-  //     can't actually back. See README's "Contract notes" for the
-  //     `GET /auth/dev-inbox` gap this would close.
+  //     was a real account.
+  //   - Dev-inbox viewer (item 145, closes a gap flagged in an earlier
+  //     session): `GET /auth/dev-inbox` reads back the exact dev-inbox file
+  //     the default `UNIDB_EMAIL_TRANSPORT=log` writes, so the redemption
+  //     forms above can be filled from a real captured email instead of a
+  //     hand-copied token. Double-gated server-side: absent entirely (404)
+  //     when the transport is real SMTP, shows a real 403 when the caller
+  //     isn't a superuser. `DELETE /auth/dev-inbox` clears it in place.
   // Per CLAUDE.md, nothing here is fabricated: anything the engine doesn't
   // support is an explicit "not available" state, never a dead-looking form.
   //
@@ -73,11 +77,11 @@
   let usersSupported = $state(true);
   let sessions = $state([]);   // [{sessionId, username, createdAt, expiresAt, revoked}]
   let sessionsSupported = $state(true);
-  let oauthProviders = $state({ google: false, github: false });
+  let oauthProviders = $state({});
 
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-  $effect(() => { load(); checkOauthCallback(); });
+  $effect(() => { load(); checkOauthCallback(); loadDevInbox(); });
 
   async function load() {
     loading = true;
@@ -528,12 +532,73 @@
     }
   }
 
-  // No remaining "not available" gaps for G1 as of PR #241 — password
-  // reset, session listing/revoke, MFA enroll/verify/disable, OAuth
-  // sign-in, and password-recovery/magic-link are all live below (OAuth
-  // buttons are feature-detected per provider and simply absent when
-  // unconfigured; there's no way to fetch a sent email's contents — see the
-  // dev-inbox note in the header comment).
+  // ── Dev-inbox viewer (item 145) ───────────────────────────────────────────
+  // Closes the item-138 gap noted above: GET/DELETE /auth/dev-inbox reads
+  // back the exact file the `log` transport writes. Double-gated
+  // server-side (404 when transport is smtp, checked before 403-not-
+  // superuser) — `devInboxSupported === false` means "genuinely not
+  // applicable here" (real SMTP transport), while `devInboxError` means a
+  // real error reached us (most likely 403 PERMISSION_DENIED for a
+  // non-superuser token) and is shown as-is rather than silently hidden.
+  let devInboxSupported = $state(null); // null = not checked yet
+  let devInboxEntries   = $state([]);
+  let devInboxBusy      = $state(false);
+  let devInboxError     = $state(null);
+
+  async function loadDevInbox() {
+    devInboxBusy = true;
+    devInboxError = null;
+    try {
+      const out = await getDevInbox({ limit: 50 });
+      devInboxSupported = out.supported;
+      devInboxEntries = out.emails;
+    } catch (e) {
+      devInboxSupported = null;
+      devInboxError = e.message ?? String(e);
+    } finally {
+      devInboxBusy = false;
+    }
+  }
+
+  async function doClearDevInbox() {
+    devInboxBusy = true;
+    devInboxError = null;
+    try {
+      await clearDevInbox();
+      devInboxEntries = [];
+    } catch (e) {
+      devInboxError = e.message ?? String(e);
+    } finally {
+      devInboxBusy = false;
+    }
+  }
+
+  // Both templates' {{link}} embed the real, single-use token as a query
+  // param — extracted from the engine's own rendered text_body, never
+  // fabricated. Kind is inferred from which of the two verify paths the
+  // link points at, so "Use this token" fills the matching field below.
+  function devInboxToken(entry) {
+    return entry.text_body?.match(/token=([0-9a-fA-F]+)/)?.[1] ?? null;
+  }
+  function devInboxKind(entry) {
+    if (entry.text_body?.includes('/auth/magiclink/verify')) return 'magiclink';
+    if (entry.text_body?.includes('/auth/verify')) return 'recovery';
+    return null;
+  }
+  function useDevInboxToken(entry) {
+    const token = devInboxToken(entry);
+    if (!token) return;
+    if (devInboxKind(entry) === 'magiclink') magicToken = token;
+    else recoverToken = token;
+  }
+
+  // No remaining "not available" gaps for G1 as of unidb main through PR
+  // #248 — reset, session listing/revoke, MFA enroll/verify/disable, OAuth
+  // sign-in (all seven presets), password-recovery/magic-link, and the
+  // dev-inbox viewer are all live below. OAuth buttons are feature-detected
+  // per provider and simply absent when unconfigured; the dev-inbox card is
+  // absent when the transport is real SMTP (404, item 145's first gate) and
+  // shows its real error when the caller isn't a superuser (403).
 </script>
 
 <div class="auth">
@@ -756,16 +821,15 @@
               {#if mfaLoginError}<p class="err small">{mfaLoginError}</p>{/if}
             </div>
           {/if}
-          {#if oauthProviders.google || oauthProviders.github}
+          {#if Object.values(oauthProviders).some(Boolean)}
             <div class="oauth-row">
               <span class="flabel">Or sign in with</span>
               <div class="oauth-btns">
-                {#if oauthProviders.google}
-                  <button class="ghost oauth-btn" onclick={() => startOauth('google')}>Google</button>
-                {/if}
-                {#if oauthProviders.github}
-                  <button class="ghost oauth-btn" onclick={() => startOauth('github')}>GitHub</button>
-                {/if}
+                {#each Object.entries(OAUTH_PROVIDER_LABELS) as [provider, label]}
+                  {#if oauthProviders[provider]}
+                    <button class="ghost oauth-btn" onclick={() => startOauth(provider)}>{label}</button>
+                  {/if}
+                {/each}
               </div>
               <p class="muted small">
                 Real browser redirect to <code>GET /auth/oauth/&lt;provider&gt;/authorize</code> —
@@ -890,14 +954,57 @@
         </div>
       </div>
 
-      <p class="gap-note">
-        <strong>Contract gap:</strong> with the default <code>UNIDB_EMAIL_TRANSPORT=log</code>,
-        the server writes the rendered email to a server-side file
-        (<code>&lt;data_dir&gt;/email-dev-inbox.jsonl</code>) instead of sending it — there is no
-        <code>GET /auth/dev-inbox</code> route to read that file back over HTTP, and this Studio is
-        a static SPA with no server-side access of its own. Paste a token above by copying it from
-        that file / server logs directly. See README's "Contract notes".
-      </p>
+      {#if devInboxBusy && devInboxSupported === null && !devInboxError}
+        <p class="muted small">Checking dev-inbox availability…</p>
+      {:else if devInboxSupported}
+        <div class="dev-inbox">
+          <div class="dev-inbox-head">
+            <span class="flabel-section">Dev inbox (item 145)</span>
+            <div class="flow-btns">
+              <button class="ghost" onclick={loadDevInbox} disabled={devInboxBusy}>
+                {devInboxBusy ? 'Loading…' : 'Refresh'}
+              </button>
+              <button class="ghost" onclick={doClearDevInbox} disabled={devInboxBusy || !devInboxEntries.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          <p class="muted small">
+            <code>GET /auth/dev-inbox</code> reads the same file the default
+            <code>UNIDB_EMAIL_TRANSPORT=log</code> writes — real captured recovery/magic-link
+            emails, newest first. Superuser-only; absent entirely on a real-SMTP deployment.
+          </p>
+          {#if devInboxEntries.length === 0}
+            <p class="muted small">No captured emails yet — send a recovery or magic-link request above.</p>
+          {:else}
+            <ul class="dev-inbox-list">
+              {#each devInboxEntries as entry}
+                <li>
+                  <div class="dev-inbox-row">
+                    <span class="dev-inbox-to">{entry.to}</span>
+                    <span class="dev-inbox-subject">{entry.subject}</span>
+                    <span class="muted small">{new Date(entry.ts * 1000).toLocaleString()}</span>
+                  </div>
+                  {#if devInboxToken(entry)}
+                    <button class="ghost small" onclick={() => useDevInboxToken(entry)}>
+                      Use this {devInboxKind(entry) === 'magiclink' ? 'magic-link' : 'recovery'} token →
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {:else if devInboxError}
+        <p class="gap-note"><strong>Dev inbox:</strong> {devInboxError}</p>
+      {:else}
+        <p class="gap-note">
+          Dev inbox not available — this server's <code>UNIDB_EMAIL_TRANSPORT</code> is
+          <code>smtp</code> (real delivery), so <code>GET /auth/dev-inbox</code> is a
+          <code>404</code> by design (item 145's first gate). Paste a token above from wherever
+          the real email actually landed.
+        </p>
+      {/if}
     </section>
 
   {/if}
@@ -1141,6 +1248,17 @@
     padding: 8px 10px;
   }
   .gap-note code { font-family: var(--mono); background: var(--panel); border-radius: 3px; padding: 0 3px; }
+  .dev-inbox { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .dev-inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dev-inbox-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .dev-inbox-list li {
+    background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .dev-inbox-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .dev-inbox-to { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .dev-inbox-subject { font-size: 12px; color: var(--text); }
+  button.small { font-size: 11px; padding: 3px 8px; align-self: flex-start; }
   .flow-btns { display: flex; gap: 8px; }
   .flow-btns button:not(.ghost) {
     background: var(--accent); color: #fff; border: none;
