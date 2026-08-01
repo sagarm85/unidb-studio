@@ -28,9 +28,10 @@ this session `REST_API.md` had caught up for the auth/sessions/storage
 surface, but the lesson stands: verify against source when in doubt, and say
 so when the two disagree.
 
-**Two new engine bugs found and reported this session** (both in
-`unidb-server-full` specifically, not `unidb-server`; both reproduced live,
-neither fixed upstream — `unidb` is read-only for this workstream):
+**Two engine bugs found and reported in an earlier session** (both in
+`unidb-server-full` specifically, not `unidb-server`; both reproduced live
+— `unidb` is read-only for this workstream, so filed rather than fixed
+here. **Both are now fixed upstream, PR #238 — see the correction below.**):
 
 1. **`try_init_storage` ignores `STORAGE_BACKEND=memory`.** It unconditionally
    calls `S3ObjectStore::from_config`, so the Docker-free `MemoryObjectStore`
@@ -58,12 +59,20 @@ committed or pushed. File these as real backlog items; the fixes are small
 (a few lines each) but they block the *storage-capable* binary specifically,
 which is what the Studio's own setup docs point people to.
 
-**Still unfixed as of PR #234** (checked `unidb-server-full/src/main.rs`
-again this session — both bugs above are still present verbatim). None of
-this session's new panels (GraphQL, MFA, OAuth) touch storage, so this
-session's live verification ran against the plain `unidb-server` binary
-(built with `--features server`), which wires `ConnectInfo` correctly and
-was never affected — a clean choice, not a workaround for either bug.
+**Correction — both fixed upstream, PR #238 (item 135).** Still unfixed as
+of PR #234 (re-checked that session); `unidb-server-full/src/main.rs` now
+selects the object store by `cfg.backend` (so `Backend::Memory` reaches
+`MemoryObjectStore` directly, matching the fix this doc's throwaway local
+patch used) and serves via
+`.into_make_service_with_connect_info::<SocketAddr>()`, matching
+`src/bin/unidb-server.rs`. **Re-verified live this session** (not just read
+against the diff): rebuilt `unidb-server-full`, started it with
+`STORAGE_BACKEND=memory` and no S3 credentials — `storage service ready,
+backend=memory` logged, `POST /storage/buckets` + `GET /storage/buckets`
+both succeeded; `POST /auth/login` against a real password user returned
+`200` with a real token pair instead of the prior 500. No further Studio
+workaround needed — `unidb-server-full` is now a clean target for every
+panel in this doc, storage included.
 
 ## Panels
 
@@ -302,10 +311,11 @@ per-object model, plus one pre-existing Studio bug fixed along the way:
   leaking the TOTP secret to a third-party image API; both rejected). The
   secret and `otpauth://` URI are shown instead, both copy-able for manual
   entry.
-- **Filed as engine bugs, not fixed here** (`unidb` read-only for this
-  workstream): the two `unidb-server-full`-specific bugs at the top of this
-  doc (memory storage backend unreachable; auth routes 500 due to missing
-  `ConnectInfo` wiring) — reconfirmed still present as of PR #234.
+- **Filed as engine bugs earlier, now fixed upstream (PR #238, item 135):**
+  the two `unidb-server-full`-specific bugs at the top of this doc (memory
+  storage backend unreachable; auth routes 500 due to missing `ConnectInfo`
+  wiring). Re-verified live this session against the rebuilt binary — see
+  the correction note near the top of this doc.
 
 ## Conventions
 - Pure static SPA, no backend of its own — every action is a `fetch` against
