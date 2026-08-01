@@ -642,13 +642,26 @@ async function authFlowPost(path, body) {
     throw transportError(err);
   }
   if (!res.ok) throw await toApiError(res);
-  const j = await res.json();
+  return res.json();
+}
+
+function toSession(j) {
   return { accessToken: j.access_token ?? j.token, refreshToken: j.refresh_token, expiresIn: j.expires_in };
 }
 
-/** POST /auth/login — password login (item 121 A1/A2). */
+/**
+ * POST /auth/login — password login (item 121 A1/A2). When the user has
+ * TOTP MFA enabled (item 127), the engine issues **no session** — instead
+ * `{mfa_required: true, challenge, expires_in}` (5-minute TTL), redeemed via
+ * `mfaChallenge()` below. The two response shapes are distinguished by the
+ * presence of `mfa_required` (verified against REST_API.md's `POST
+ * /auth/login` docs), so callers must check `.mfaRequired` before assuming
+ * `.accessToken` is set.
+ */
 export async function authLogin(username, password) {
-  return authFlowPost('/auth/login', { username, password });
+  const j = await authFlowPost('/auth/login', { username, password });
+  if (j.mfa_required) return { mfaRequired: true, challenge: j.challenge, expiresIn: j.expires_in };
+  return { mfaRequired: false, ...toSession(j) };
 }
 
 /**
@@ -657,12 +670,12 @@ export async function authLogin(username, password) {
  * `signup_enabled`, which the panel checks before offering this).
  */
 export async function authSignup(username, password) {
-  return authFlowPost('/auth/signup', { username, password });
+  return toSession(await authFlowPost('/auth/signup', { username, password }));
 }
 
 /** POST /auth/refresh — exchange a refresh token for a new access+refresh pair (item 121 A4). */
 export async function authRefresh(refreshToken) {
-  return authFlowPost('/auth/refresh', { refresh_token: refreshToken });
+  return toSession(await authFlowPost('/auth/refresh', { refresh_token: refreshToken }));
 }
 
 /**
@@ -735,6 +748,158 @@ export async function revokeSession(sessionId) {
     throw transportError(err);
   }
   if (!res.ok) throw await toApiError(res);
+}
+
+// ---- TOTP multi-factor authentication (item 127, Workstream D4; PR #229) -
+// Self-contained TOTP second factor: enroll -> verify (flips MFA on, issues
+// one-time recovery codes) -> a later login returns a `challenge` instead of
+// a session -> mfaChallenge() redeems it. Every route below is JWT-gated
+// EXCEPT mfaChallenge (the challenge token itself is the credential, same
+// posture as /auth/refresh — see REST_API.md's "TOTP-based multi-factor
+// authentication" section). Never persisted client-side beyond this
+// session's in-memory state — the secret/recovery codes are shown once by
+// the engine itself and this module doesn't cache them either.
+
+/**
+ * POST /auth/mfa/enroll — start enrollment. Returns the fresh TOTP secret +
+ * an `otpauth://` URI to render as a QR code. MFA is NOT enabled yet — call
+ * mfaVerify() with a live code to confirm.
+ */
+export async function mfaEnroll() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/enroll`, { method: 'POST', headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, secret: j.secret, otpauthUrl: j.otpauth_url };
+}
+
+/**
+ * POST /auth/mfa/verify — confirm a pending enrollment with a live 6-digit
+ * code. On success MFA flips to enabled and the engine returns 8 one-time
+ * recovery codes — shown to the user exactly once, never re-fetchable.
+ */
+export async function mfaVerify(code) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/verify`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ code }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { enabled: !!j.enabled, recoveryCodes: j.recovery_codes ?? [] };
+}
+
+/**
+ * POST /auth/mfa/challenge — redeem the `{challenge}` a POST /auth/login
+ * returned (in place of a session) plus a live TOTP or recovery code, for a
+ * real session. Public route (no bearer token — the challenge IS the
+ * credential); rate-limited like login/signup/refresh.
+ */
+export async function mfaChallenge(challenge, code) {
+  const j = await authFlowPost('/auth/mfa/challenge', { challenge, code });
+  return toSession(j);
+}
+
+/**
+ * POST /auth/mfa/disable — turn MFA off for the caller's own account.
+ * Requires a live TOTP/recovery `code` unless the caller is a superuser
+ * (emergency recovery path — no code needed then).
+ */
+export async function mfaDisable(code) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/disable`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(code ? { code } : {}),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- OAuth 2.0 social login (item 128, Workstream D1; PR #230) -----------
+// `GET /auth/oauth/{provider}/authorize` is a real browser redirect (302 to
+// the provider) — clicking "Sign in with Google/GitHub" navigates the whole
+// tab there directly, it is never fetched. The only thing this module does
+// is *feature-detect* which of the two known provider names
+// (`google`/`github`) are actually configured, so the panel can hide a
+// button that would otherwise 404. Per REST_API.md: an unconfigured
+// provider's authorize/callback routes both return a plain `404`,
+// indistinguishable from a non-existent route — there is no `GET /auth/meta`
+// field listing configured providers. Detection technique: fetch the
+// authorize URL with `redirect: 'manual'` so the browser does NOT follow a
+// real redirect (no navigation, no request ever reaches Google/GitHub) —
+// a configured provider yields an opaque redirect response (immediately
+// discarded), an unconfigured one yields a normal, readable 404. Both
+// authorize/callback are explicitly NOT rate-limited (REST_API.md), so
+// probing both provider names on every panel load is safe.
+
+const OAUTH_PROVIDERS = ['google', 'github'];
+
+export function oauthAuthorizeUrl(provider) {
+  return `${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/authorize`;
+}
+
+async function oauthProviderConfigured(provider) {
+  try {
+    const res = await fetch(oauthAuthorizeUrl(provider), { redirect: 'manual' });
+    // A same-origin fetch with redirect:'manual' never exposes the redirect
+    // target — a real 302 collapses to an opaque response (status 0, type
+    // 'opaqueredirect'). Anything else (a normal, readable response) means
+    // no redirect happened, i.e. the provider isn't configured (404).
+    return res.type === 'opaqueredirect' || res.status === 0;
+  } catch {
+    return false; // transport failure — treat as "can't tell, hide it"
+  }
+}
+
+/**
+ * Feature-detects which OAuth providers are configured on this server (see
+ * above for the technique). Returns `{google: bool, github: bool}`. Never
+ * throws — an unreachable server just reports every provider as
+ * unconfigured, matching the panel's existing "degrade gracefully" pattern.
+ */
+export async function getOauthProviders() {
+  if (!IS_CONFIGURED) return Object.fromEntries(OAUTH_PROVIDERS.map((p) => [p, false]));
+  const results = await Promise.all(OAUTH_PROVIDERS.map((p) => oauthProviderConfigured(p)));
+  return Object.fromEntries(OAUTH_PROVIDERS.map((p, i) => [p, results[i]]));
+}
+
+/**
+ * GET /auth/oauth/{provider}/callback?code=...&state=... — completes the
+ * OAuth flow. Called with a plain `fetch` (not a browser navigation) when
+ * the Studio's own origin is configured as the provider's
+ * `_REDIRECT_URI` and the tab lands back with `?code=&state=` in its own
+ * URL — see AuthPanel.svelte's `checkOauthCallback()`, which is the piece
+ * that actually detects that landing. Public route (the provider's
+ * redirect itself is the credential, same posture as `/auth/refresh`).
+ */
+export async function oauthCallback(provider, code, state) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ code, state });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/callback?${qs}`);
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return toSession(await res.json());
 }
 
 // ---- observability (item 21) --------------------------------------------

@@ -1,21 +1,32 @@
 <script>
-  import { getAuthMeta, getWhoami, getAuthzSnapshot, runSql, authLogin, authSignup, authRefresh, authLogout, listSessions, revokeSession, BASE_URL } from './api.js';
+  import {
+    getAuthMeta, getWhoami, getAuthzSnapshot, runSql,
+    authLogin, authSignup, authRefresh, authLogout,
+    listSessions, revokeSession,
+    mfaEnroll, mfaVerify, mfaChallenge, mfaDisable,
+    getOauthProviders, oauthAuthorizeUrl, oauthCallback,
+    BASE_URL,
+  } from './api.js';
 
   // Authentication panel (Workstream G1 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
   // Live over the engine's real, fully-merged contract (items 100/121/122/4,
-  // through PR #225 on unidb main):
+  // 127, 128, through PR #230 on unidb main):
   //   - GET /auth/meta + GET /auth/whoami (item 100).
   //   - Users: list/create-with-password/delete, plus reset-password for an
-  //     EXISTING user via `ALTER USER … PASSWORD '…'` (item 4) — verified
-  //     shipped in `src/authz/mod.rs::parse_auth_stmt`, no more feature-detect
-  //     needed; it's a normal action with normal error handling now.
-  //   - The full credentialed flow: POST /auth/{login,signup,refresh,logout}.
+  //     EXISTING user via `ALTER USER … PASSWORD '…'` (item 4).
+  //   - The full credentialed flow: POST /auth/{login,signup,refresh,logout},
+  //     including the item-127 MFA-challenge branch (login returns
+  //     `{mfa_required, challenge}` instead of a session when the user has
+  //     TOTP enabled).
   //   - Active sessions: `unidb_catalog.sessions` (item 4) + revoke-by-id via
   //     `DELETE /auth/sessions/{id}`.
+  //   - TOTP MFA (item 127, D4): enroll -> verify -> recovery codes -> disable,
+  //     reflecting `whoami.mfa_enabled`.
+  //   - OAuth social login (item 128, D1): "Sign in with Google/GitHub"
+  //     against feature-detected providers.
   // Per CLAUDE.md, nothing here is fabricated: anything the engine doesn't
-  // support is an explicit "not available" state, never a dead-looking form —
-  // still true for the two genuinely-open gaps noted at the bottom.
+  // support is an explicit "not available" state, never a dead-looking form.
   //
   // Production issuer (A5, `UNIDB_JWT_SIGNING_KEY`) and asymmetric JWT/JWKS
   // (A6, `UNIDB_JWT_PUBLIC_KEY` + `GET /.well-known/jwks.json`) shipped in PR
@@ -26,6 +37,19 @@
   //
   // Role/grant/membership editing (including the three built-in roles) is
   // the Roles tab's job (G3) — not duplicated here.
+  //
+  // QR rendering for MFA enrollment is deliberately NOT built: this SPA has
+  // no backend, so rendering a QR from the `otpauth://` URI client-side
+  // would mean either (a) vendoring a QR-encoding algorithm — a nontrivial,
+  // easy-to-get-subtly-wrong piece of code (Reed–Solomon ECC, mask-pattern
+  // scoring) that can't be scan-tested in this environment, so a silent bug
+  // would ship a QR image that *looks* right but doesn't scan — or (b)
+  // sending the TOTP secret to a third-party QR image API, a real
+  // secret-exposure bug this codebase's engine-truthful/no-fabrication ethos
+  // would reject outright. Every authenticator app also accepts the raw
+  // base32 secret as manual entry, which is what's shown instead (both the
+  // secret and the full `otpauth://` URI, copy-able) — a real degrade, not a
+  // missing feature dressed up.
 
   let loading  = $state(true);
   let error    = $state(null);
@@ -35,17 +59,18 @@
   let usersSupported = $state(true);
   let sessions = $state([]);   // [{sessionId, username, createdAt, expiresAt, revoked}]
   let sessionsSupported = $state(true);
+  let oauthProviders = $state({ google: false, github: false });
 
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-  $effect(() => { load(); });
+  $effect(() => { load(); checkOauthCallback(); });
 
   async function load() {
     loading = true;
     error = null;
     try {
-      const [m, w, snap, sess] = await Promise.all([
-        getAuthMeta(), getWhoami(), getAuthzSnapshot(), listSessions(),
+      const [m, w, snap, sess, providers] = await Promise.all([
+        getAuthMeta(), getWhoami(), getAuthzSnapshot(), listSessions(), getOauthProviders(),
       ]);
       meta = m;
       whoami = w;
@@ -53,6 +78,7 @@
       users = snap.users;
       sessionsSupported = sess.supported;
       sessions = sess.sessions;
+      oauthProviders = providers;
     } catch (e) {
       error = { code: e.code, message: e.message, status: e.status };
     } finally {
@@ -175,17 +201,49 @@
   let logoutDone   = $state(false);
   let copiedField  = $state(null);
 
+  // item 127: when the account being logged into has TOTP MFA enabled,
+  // POST /auth/login returns {mfa_required, challenge, expires_in} instead
+  // of a session — this holds that pending challenge until redeemed (or it
+  // expires, 5 minutes) at POST /auth/mfa/challenge.
+  let mfaLoginChallenge = $state(null); // { challenge, expiresIn } | null
+  let mfaLoginCode      = $state('');
+  let mfaLoginBusy      = $state(false);
+  let mfaLoginError     = $state(null);
+
   function applyFlowResult(r) {
     flowResult = r;
     flowRefreshInput = r.refreshToken ?? '';
     logoutDone = false;
+    mfaLoginChallenge = null;
   }
 
   async function doLogin() {
-    flowError = null; flowBusy = 'login'; logoutDone = false;
-    try { applyFlowResult(await authLogin(flowUsername.trim(), flowPassword)); }
+    flowError = null; flowBusy = 'login'; logoutDone = false; mfaLoginChallenge = null;
+    try {
+      const r = await authLogin(flowUsername.trim(), flowPassword);
+      if (r.mfaRequired) {
+        mfaLoginChallenge = { challenge: r.challenge, expiresIn: r.expiresIn };
+        mfaLoginCode = '';
+        mfaLoginError = null;
+      } else {
+        applyFlowResult(r);
+      }
+    }
     catch (e) { flowError = e.message ?? String(e); }
     finally { flowBusy = null; }
+  }
+
+  async function doMfaLoginChallenge() {
+    if (!mfaLoginChallenge || !mfaLoginCode) return;
+    mfaLoginBusy = true;
+    mfaLoginError = null;
+    try {
+      applyFlowResult(await mfaChallenge(mfaLoginChallenge.challenge, mfaLoginCode.trim()));
+    } catch (e) {
+      mfaLoginError = e.message ?? String(e);
+    } finally {
+      mfaLoginBusy = false;
+    }
   }
   async function doSignup() {
     flowError = null; flowBusy = 'signup'; logoutDone = false;
@@ -215,8 +273,163 @@
     } catch { /* clipboard unavailable — silently ignore */ }
   }
 
-  // No remaining "not available" gaps for G1 as of PR #225 — password reset
-  // and session listing/revoke are both live below.
+  // ── TOTP MFA (item 127, D4) — enroll -> verify -> recovery codes; disable ─
+  // Acts on the CALLER's own account (the token this Studio instance is
+  // configured with), same as the "Signed in as" card above — not the users
+  // list, which is a different identity's account.
+  let mfaOpen        = $state(false);  // enroll modal
+  let mfaStep        = $state('start'); // 'start' | 'verify' | 'done'
+  let mfaSecret       = $state(null);
+  let mfaOtpauthUrl   = $state(null);
+  let mfaVerifyCode   = $state('');
+  let mfaRecoveryCodes = $state([]);
+  let mfaBusy         = $state(false);
+  let mfaError        = $state(null);
+
+  function openMfaEnroll() {
+    mfaOpen = true;
+    mfaStep = 'start';
+    mfaSecret = null;
+    mfaOtpauthUrl = null;
+    mfaVerifyCode = '';
+    mfaRecoveryCodes = [];
+    mfaError = null;
+  }
+
+  async function startMfaEnroll() {
+    mfaBusy = true;
+    mfaError = null;
+    try {
+      const out = await mfaEnroll();
+      if (!out.supported) { mfaError = "This server doesn't expose POST /auth/mfa/enroll yet."; return; }
+      mfaSecret = out.secret;
+      mfaOtpauthUrl = out.otpauthUrl;
+      mfaStep = 'verify';
+    } catch (e) {
+      mfaError = e.message ?? String(e);
+    } finally {
+      mfaBusy = false;
+    }
+  }
+
+  async function submitMfaVerify() {
+    if (!mfaVerifyCode) { mfaError = 'Enter the 6-digit code from your authenticator app.'; return; }
+    mfaBusy = true;
+    mfaError = null;
+    try {
+      const out = await mfaVerify(mfaVerifyCode.trim());
+      mfaRecoveryCodes = out.recoveryCodes;
+      mfaStep = 'done';
+      await load(); // refresh whoami.mfa_enabled
+    } catch (e) {
+      mfaError = e.message ?? String(e);
+    } finally {
+      mfaBusy = false;
+    }
+  }
+
+  function closeMfaEnroll() {
+    mfaOpen = false;
+  }
+
+  let mfaDisableOpen  = $state(false);
+  let mfaDisableCode  = $state('');
+  let mfaDisableBusy  = $state(false);
+  let mfaDisableError = $state(null);
+
+  function openMfaDisable() {
+    mfaDisableOpen = true;
+    mfaDisableCode = '';
+    mfaDisableError = null;
+  }
+
+  async function submitMfaDisable() {
+    if (!whoami.is_superuser && !mfaDisableCode) {
+      mfaDisableError = 'Enter a live TOTP or recovery code.';
+      return;
+    }
+    mfaDisableBusy = true;
+    mfaDisableError = null;
+    try {
+      await mfaDisable(mfaDisableCode.trim() || null);
+      mfaDisableOpen = false;
+      await load();
+    } catch (e) {
+      mfaDisableError = e.message ?? String(e);
+    } finally {
+      mfaDisableBusy = false;
+    }
+  }
+
+  async function copyMfaField(field, value) {
+    await copyField(field, value);
+  }
+
+  // ── OAuth 2.0 social login (item 128, D1) ─────────────────────────────────
+  // "Sign in with Google/GitHub" is a REAL browser redirect
+  // (GET /auth/oauth/{provider}/authorize -> 302 to the provider), not a
+  // fetch — it navigates the whole tab away from the Studio. For the
+  // callback to land back in THIS panel (a static SPA with no backend of
+  // its own to run a server-side callback), the deployment's
+  // `UNIDB_OAUTH_<PROVIDER>_REDIRECT_URI` needs to point back at the
+  // Studio's own origin (e.g. `<studio-origin>/?tab=auth`) — App.svelte
+  // already restores the `?tab=` on load, so that lands here. This module
+  // then forwards the provider's `?code=&state=` to the engine's own
+  // `GET /auth/oauth/{provider}/callback` as a plain (CORS) fetch to finish
+  // the flow. This is a real, working integration when the redirect_uri is
+  // configured that way — not assumed/fabricated behavior; if it isn't
+  // configured that way (e.g. redirect_uri points straight at the engine),
+  // the provider's callback response (raw JSON) just lands outside the SPA,
+  // same as it would for any other backend-less static-SPA OAuth consumer.
+  const OAUTH_PENDING_KEY = 'unidb_studio_oauth_pending_provider';
+  let oauthError = $state(null);
+  let oauthCallbackBusy = $state(false);
+
+  function startOauth(provider) {
+    try { sessionStorage.setItem(OAUTH_PENDING_KEY, provider); } catch { /* storage unavailable */ }
+    window.location.href = oauthAuthorizeUrl(provider);
+  }
+
+  function stripOauthQueryParams() {
+    const url = new URL(window.location.href);
+    let changed = false;
+    for (const k of ['code', 'state', 'error']) {
+      if (url.searchParams.has(k)) { url.searchParams.delete(k); changed = true; }
+    }
+    if (changed) history.replaceState({}, '', url.toString());
+  }
+
+  async function checkOauthCallback() {
+    const params = new URLSearchParams(window.location.search);
+    let pending = null;
+    try { pending = sessionStorage.getItem(OAUTH_PENDING_KEY); } catch { /* storage unavailable */ }
+
+    if (params.get('error')) {
+      oauthError = `Provider denied the request: ${params.get('error')}`;
+      try { sessionStorage.removeItem(OAUTH_PENDING_KEY); } catch { /* ignore */ }
+      stripOauthQueryParams();
+      return;
+    }
+    if (!params.has('code') || !params.has('state') || !pending) return;
+
+    try { sessionStorage.removeItem(OAUTH_PENDING_KEY); } catch { /* ignore */ }
+    oauthCallbackBusy = true;
+    oauthError = null;
+    try {
+      applyFlowResult(await oauthCallback(pending, params.get('code'), params.get('state')));
+      await load();
+    } catch (e) {
+      oauthError = e.message ?? String(e);
+    } finally {
+      oauthCallbackBusy = false;
+      stripOauthQueryParams();
+    }
+  }
+
+  // No remaining "not available" gaps for G1 as of PR #230 — password
+  // reset, session listing/revoke, MFA enroll/verify/disable, and OAuth
+  // sign-in are all live below (OAuth buttons are feature-detected per
+  // provider and simply absent when unconfigured).
 </script>
 
 <div class="auth">
@@ -294,6 +507,18 @@
                 </ul>
               {:else}
                 <span class="muted small">none (or superuser — bypasses grants)</span>
+              {/if}
+            </dd>
+            <dt>TOTP MFA (<code>whoami.mfa_enabled</code>)</dt>
+            <dd>
+              {#if whoami.mfa_enabled == null}
+                <span class="muted small">not reported by this server (pre-item-127)</span>
+              {:else if whoami.mfa_enabled}
+                <span class="pill ok">enabled</span>
+                <button class="link-btn" onclick={openMfaDisable}>Disable</button>
+              {:else}
+                <span class="pill muted">not enabled</span>
+                <button class="link-btn" onclick={openMfaEnroll}>Enroll</button>
               {/if}
             </dd>
           </dl>
@@ -406,6 +631,47 @@
               {flowBusy === 'signup' ? 'Signing up…' : 'Signup'}
             </button>
           </div>
+          {#if mfaLoginChallenge}
+            <div class="mfa-challenge">
+              <p class="muted small">
+                This account has MFA enabled — enter a live TOTP or recovery code to finish
+                signing in (challenge expires in {mfaLoginChallenge.expiresIn}s).
+              </p>
+              <div class="mfa-challenge-row">
+                <input
+                  bind:value={mfaLoginCode}
+                  placeholder="123456"
+                  class="mono-input"
+                  spellcheck="false"
+                  onkeydown={(e) => e.key === 'Enter' && doMfaLoginChallenge()}
+                />
+                <button onclick={doMfaLoginChallenge} disabled={mfaLoginBusy || !mfaLoginCode}>
+                  {mfaLoginBusy ? 'Verifying…' : 'Verify'}
+                </button>
+              </div>
+              {#if mfaLoginError}<p class="err small">{mfaLoginError}</p>{/if}
+            </div>
+          {/if}
+          {#if oauthProviders.google || oauthProviders.github}
+            <div class="oauth-row">
+              <span class="flabel">Or sign in with</span>
+              <div class="oauth-btns">
+                {#if oauthProviders.google}
+                  <button class="ghost oauth-btn" onclick={() => startOauth('google')}>Google</button>
+                {/if}
+                {#if oauthProviders.github}
+                  <button class="ghost oauth-btn" onclick={() => startOauth('github')}>GitHub</button>
+                {/if}
+              </div>
+              <p class="muted small">
+                Real browser redirect to <code>GET /auth/oauth/&lt;provider&gt;/authorize</code> —
+                leaves this page. Lands back here only if this server's
+                <code>_REDIRECT_URI</code> points at the Studio's own origin.
+              </p>
+            </div>
+          {/if}
+          {#if oauthCallbackBusy}<p class="muted small">Completing OAuth sign-in…</p>{/if}
+          {#if oauthError}<p class="err small">{oauthError}</p>{/if}
         </div>
 
         <div class="flow-form">
@@ -515,6 +781,121 @@
   </div>
 {/if}
 
+<!-- ── MFA enroll modal (item 127) ── -->
+{#if mfaOpen}
+  <div class="modal-backdrop" role="presentation" onpointerdown={closeMfaEnroll}>
+    <div class="modal" role="dialog" aria-label="Enroll MFA" onpointerdown={(e) => e.stopPropagation()}>
+      <div class="modal-head">
+        <strong>Enroll TOTP MFA</strong>
+        <button class="x" onclick={closeMfaEnroll}>✕</button>
+      </div>
+      <div class="modal-body">
+        {#if mfaStep === 'start'}
+          <p class="muted small">
+            Runs <code>POST /auth/mfa/enroll</code> for your own account ({whoami?.user}).
+            Generates a fresh TOTP secret — not enabled yet until you confirm it below with a
+            live code.
+          </p>
+          {#if mfaError}<p class="err">{mfaError}</p>{/if}
+        {:else if mfaStep === 'verify'}
+          <p class="muted small">
+            Add this to your authenticator app (Google Authenticator, 1Password, Authy, …),
+            then enter the 6-digit code it shows to confirm.
+          </p>
+          <label class="field">
+            <span class="flabel">Secret (manual entry)</span>
+            <div class="token-value">
+              <code class="mono truncate">{mfaSecret}</code>
+              <button class="copy-btn" onclick={() => copyMfaField('mfa-secret', mfaSecret)}>
+                {copiedField === 'mfa-secret' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="flabel">otpauth:// URI</span>
+            <div class="token-value">
+              <code class="mono truncate">{mfaOtpauthUrl}</code>
+              <button class="copy-btn" onclick={() => copyMfaField('mfa-uri', mfaOtpauthUrl)}>
+                {copiedField === 'mfa-uri' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="flabel">6-digit code</span>
+            <input
+              bind:value={mfaVerifyCode}
+              placeholder="123456"
+              class="mono-input"
+              spellcheck="false"
+              onkeydown={(e) => e.key === 'Enter' && submitMfaVerify()}
+            />
+          </label>
+          {#if mfaError}<p class="err">{mfaError}</p>{/if}
+        {:else if mfaStep === 'done'}
+          <p class="ok-note">MFA enabled. Save these one-time recovery codes now — shown only once,
+            never re-fetchable.</p>
+          <div class="recovery-codes">
+            {#each mfaRecoveryCodes as c}<code class="mono">{c}</code>{/each}
+          </div>
+          <button class="ghost small-btn" onclick={() => copyMfaField('mfa-recovery', mfaRecoveryCodes.join('\n'))}>
+            {copiedField === 'mfa-recovery' ? 'Copied' : 'Copy all'}
+          </button>
+        {/if}
+      </div>
+      <div class="modal-foot">
+        <span class="grow"></span>
+        {#if mfaStep === 'start'}
+          <button class="ghost" onclick={closeMfaEnroll}>Cancel</button>
+          <button onclick={startMfaEnroll} disabled={mfaBusy}>{mfaBusy ? 'Starting…' : 'Start enrollment'}</button>
+        {:else if mfaStep === 'verify'}
+          <button class="ghost" onclick={closeMfaEnroll}>Cancel</button>
+          <button onclick={submitMfaVerify} disabled={mfaBusy || !mfaVerifyCode}>{mfaBusy ? 'Verifying…' : 'Verify & enable'}</button>
+        {:else}
+          <button onclick={closeMfaEnroll}>Done</button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ── MFA disable modal (item 127) ── -->
+{#if mfaDisableOpen}
+  <div class="modal-backdrop" role="presentation" onpointerdown={() => (mfaDisableOpen = false)}>
+    <div class="modal" role="dialog" aria-label="Disable MFA" onpointerdown={(e) => e.stopPropagation()}>
+      <div class="modal-head">
+        <strong>Disable MFA</strong>
+        <button class="x" onclick={() => (mfaDisableOpen = false)}>✕</button>
+      </div>
+      <div class="modal-body">
+        {#if whoami?.is_superuser}
+          <p class="muted small">
+            Superuser emergency path — no code required (<code>POST /auth/mfa/disable</code>
+            with an empty body).
+          </p>
+        {:else}
+          <p class="muted small">Enter a live TOTP or recovery code to confirm.</p>
+          <label class="field">
+            <span class="flabel">Code</span>
+            <input
+              bind:value={mfaDisableCode}
+              placeholder="123456 or a1b2c3-d4e5f6"
+              class="mono-input"
+              spellcheck="false"
+              onkeydown={(e) => e.key === 'Enter' && submitMfaDisable()}
+            />
+          </label>
+        {/if}
+        {#if mfaDisableError}<p class="err">{mfaDisableError}</p>{/if}
+      </div>
+      <div class="modal-foot">
+        <span class="grow"></span>
+        <button class="ghost" onclick={() => (mfaDisableOpen = false)}>Cancel</button>
+        <button onclick={submitMfaDisable} disabled={mfaDisableBusy}>{mfaDisableBusy ? 'Disabling…' : 'Disable MFA'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .auth { display: flex; flex-direction: column; gap: 16px; max-width: 900px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -604,6 +985,29 @@
   .session-table tr:last-child td { border-bottom: none; }
   .session-table tr.revoked-row { opacity: 0.6; }
   .session-id { white-space: nowrap; }
+
+  .mfa-challenge {
+    margin-top: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel-alt);
+  }
+  .mfa-challenge-row { display: flex; gap: 8px; margin-top: 6px; }
+  .mfa-challenge-row input { flex: 1; min-width: 0; }
+  .mfa-challenge-row button {
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer; flex-shrink: 0;
+  }
+
+  .oauth-row { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+  .oauth-btns { display: flex; gap: 8px; }
+  .oauth-btn { flex: 1; }
+
+  .recovery-codes {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0;
+  }
+  .recovery-codes code {
+    font-family: var(--mono); font-size: 12px; background: var(--panel-alt);
+    border-radius: 4px; padding: 5px 8px; text-align: center;
+  }
 
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
