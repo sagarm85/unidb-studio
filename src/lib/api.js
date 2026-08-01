@@ -1371,6 +1371,7 @@ const INTROSPECTION_QUERY = `
   query StudioIntrospection {
     __schema {
       queryType { name }
+      mutationType { name }
       types {
         kind
         name

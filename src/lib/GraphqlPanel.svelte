@@ -1,16 +1,18 @@
 <script>
   import { getGraphqlSchema, graphqlRequest, BASE_URL } from './api.js';
 
-  // GraphQL explorer (Workstream C4, item 130 — see
+  // GraphQL explorer (Workstream C4, item 130/133 — see
   // ../../docs/AUTH_POLICY_PANELS_PLAN.md). Live over the engine's
-  // schema-derived, read-only `POST /graphql` (merged via PR #232 on unidb
-  // main). Two parts, same split as the API-docs panel (G4): (1) a schema
-  // browser generated straight from a standard GraphQL introspection query
-  // (every value here is engine data — nothing invented), and (2) a query
-  // editor that POSTs `{query, variables}` and renders the real
-  // `{data, errors}` response. JWT-gated like every other data-plane
-  // route — not public — and resolves through the same enforced
-  // RLS/grants path as /sql and /rest/v1 (per REST_API.md's "C4 — GraphQL").
+  // schema-derived, read + write `POST /graphql` (queries merged via PR
+  // #232; mutations via PR #235 on unidb main). Three parts, extending the
+  // API-docs panel (G4)'s split: (1) a schema browser generated straight
+  // from a standard GraphQL introspection query (every value here is
+  // engine data — nothing invented), (2) mutation support — insert_/
+  // update_/delete_<table> root fields, each resolved through the exact
+  // same enforced RLS/grant path as the query side, no parallel write path
+  // — and (3) a query/mutation editor that POSTs `{query, variables}` and
+  // renders the real `{data, errors}` response. JWT-gated like every other
+  // data-plane route — not public.
   //
   // The two differentiators unidb has over a relational-only
   // Supabase/PostgREST + pg_graphql stack — graph edge traversal
@@ -44,6 +46,15 @@
   const queryTypeName = $derived(schema?.queryType?.name ?? null);
   const queryType = $derived(types.find((t) => t.name === queryTypeName) ?? null);
   const rootFields = $derived(queryType?.fields ?? []);
+  // item 133: a Mutation root only exists when at least one table is
+  // eligible (a GraphQL object type needs ≥1 field) — absent entirely on a
+  // schema with zero tables, not an error.
+  const mutationTypeName = $derived(schema?.mutationType?.name ?? null);
+  const mutationType = $derived(types.find((t) => t.name === mutationTypeName) ?? null);
+  const mutationFields = $derived(mutationType?.fields ?? []);
+  const insertFields = $derived(mutationFields.filter((f) => f.name.startsWith('insert_')));
+  const updateFields = $derived(mutationFields.filter((f) => f.name.startsWith('update_')));
+  const deleteFields = $derived(mutationFields.filter((f) => f.name.startsWith('delete_')));
 
   // Print a TypeRef the way GraphQL SDL would: `[Table!]!`, `Int`, …
   function printTypeRef(t) {
@@ -92,7 +103,7 @@
   const edgeCapableTypes = $derived(objectTypes.filter((t) => hasEdges(t.name)));
 
   // ── selection (sidebar -> detail pane) ────────────────────────────────────
-  let selected = $state(null); // { kind: 'field'|'type', name }
+  let selected = $state(null); // { kind: 'field'|'type'|'mutation', name }
 
   function selectField(f) {
     selected = { kind: 'field', name: f.name };
@@ -100,8 +111,18 @@
   function selectType(t) {
     selected = { kind: 'type', name: t.name };
   }
+  function selectMutation(f) {
+    selected = { kind: 'mutation', name: f.name };
+  }
   const selectedField = $derived(selected?.kind === 'field' ? rootFields.find((f) => f.name === selected.name) : null);
   const selectedType = $derived(selected?.kind === 'type' ? types.find((t) => t.name === selected.name) : null);
+  const selectedMutation = $derived(selected?.kind === 'mutation' ? mutationFields.find((f) => f.name === selected.name) : null);
+  function starterForMutation(f) {
+    if (f.name.startsWith('insert_')) return starterInsert(f);
+    if (f.name.startsWith('update_')) return starterUpdate(f);
+    if (f.name.startsWith('delete_')) return starterDelete(f);
+    return null;
+  }
 
   // ── starter queries ────────────────────────────────────────────────────────
   function starterForField(f) {
@@ -117,6 +138,47 @@
     const cols = scalarFieldNames(typeName).slice(0, 3);
     const body = cols.length ? cols.join('\n    ') : '__typename';
     return `{\n  ${f.name}(limit: 3) {\n    ${body}\n    edges(direction: OUT) {\n      fromId\n      toId\n      edgeType\n      props\n    }\n  }\n}`;
+  }
+
+  // A JSON-typed placeholder value for a scalar field, using the field's
+  // REAL GraphQL type (Int/Float/Boolean/String) from the introspected
+  // schema — not a blind guess, though the value itself is a stand-in the
+  // user is expected to edit before running (same spirit as ApiDocsPanel's
+  // exampleValue for /rest/v1 curl snippets).
+  function placeholderForField(f) {
+    const { named } = unwrapType(f.type);
+    if (named?.name === 'Int') return 1;
+    if (named?.name === 'Float') return 1.5;
+    if (named?.name === 'Boolean') return true;
+    return 'value';
+  }
+  function tableForMutation(fieldName, prefix) {
+    return types.find((t) => t.name === fieldName.slice(prefix.length));
+  }
+  function starterInsert(f) {
+    const t = tableForMutation(f.name, 'insert_');
+    const cols = (t?.fields ?? []).filter((c) => isScalarish(c.type)).slice(0, 4);
+    const values = cols.map((c) => `${c.name}: ${JSON.stringify(placeholderForField(c))}`).join(', ');
+    const body = cols.length ? cols.slice(0, 3).map((c) => c.name).join('\n    ') : '__typename';
+    return `mutation {\n  ${f.name}(values: { ${values} }) {\n    ${body}\n  }\n}`;
+  }
+  function starterUpdate(f) {
+    const t = tableForMutation(f.name, 'update_');
+    const cols = (t?.fields ?? []).filter((c) => isScalarish(c.type));
+    const pk = cols.find((c) => c.name === 'id') ?? cols[0];
+    const other = cols.find((c) => c.name !== pk?.name) ?? cols[0];
+    const filterArg = pk ? `${pk.name}: ${JSON.stringify(placeholderForField(pk))}` : '';
+    const setObj = other ? `${other.name}: ${JSON.stringify(placeholderForField(other))}` : '';
+    const body = cols.length ? cols.slice(0, 3).map((c) => c.name).join('\n    ') : '__typename';
+    return `mutation {\n  ${f.name}(${filterArg}, set: { ${setObj} }) {\n    ${body}\n  }\n}`;
+  }
+  function starterDelete(f) {
+    const t = tableForMutation(f.name, 'delete_');
+    const cols = (t?.fields ?? []).filter((c) => isScalarish(c.type));
+    const pk = cols.find((c) => c.name === 'id') ?? cols[0];
+    const filterArg = pk ? `${pk.name}: ${JSON.stringify(placeholderForField(pk))}` : '';
+    const body = cols.length ? cols.slice(0, 3).map((c) => c.name).join('\n    ') : '__typename';
+    return `mutation {\n  ${f.name}(${filterArg}) {\n    ${body}\n  }\n}`;
   }
 
   function useStarter(text) {
@@ -204,6 +266,18 @@
               {/each}
             </ul>
           {/if}
+          {#if mutationFields.length}
+            <div class="sidebar-head"><span class="sidebar-title">Mutations</span></div>
+            <ul class="entity-list">
+              {#each [...insertFields, ...updateFields, ...deleteFields] as f}
+                <li class:active={selected?.kind === 'mutation' && selected.name === f.name}>
+                  <button class="entity-btn" onclick={() => selectMutation(f)}>
+                    {f.name} <span class="badge mut">write</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
           <div class="sidebar-head"><span class="sidebar-title">Types</span></div>
           <ul class="entity-list">
             {#each objectTypes as t}
@@ -254,6 +328,23 @@
             </p>
             <button class="ghost small-btn" onclick={() => useStarter(starterForField(selectedField))}>
               Use starter query →
+            </button>
+          </section>
+        {/if}
+
+        {#if selectedMutation}
+          <section class="block">
+            <h4>Mutation field</h4>
+            <p class="field-sig mono">
+              {selectedMutation.name}({selectedMutation.args?.map((a) => `${a.name}: ${printTypeRef(a.type)}`).join(', ') ?? ''}): {printTypeRef(selectedMutation.type)}
+            </p>
+            <p class="hint">
+              Resolves through the exact same enforced <code>INSERT</code>/<code>UPDATE</code>/
+              <code>DELETE … RETURNING</code> path as <code>/rest/v1</code> and <code>/sql</code> —
+              <code>WITH CHECK</code>/RLS policies apply on write exactly as they do over SQL.
+            </p>
+            <button class="ghost small-btn" onclick={() => useStarter(starterForMutation(selectedMutation))}>
+              Use starter mutation →
             </button>
           </section>
         {/if}
@@ -370,6 +461,7 @@
   }
   .badge.vec { background: rgba(124, 58, 237, 0.15); color: #7c3aed; }
   .badge.edge { background: rgba(8, 145, 178, 0.15); color: #0891b2; }
+  .badge.mut { background: rgba(220, 38, 38, 0.12); color: #dc2626; }
 
   .detail { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 18px; }
 
