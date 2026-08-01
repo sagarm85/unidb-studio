@@ -4,17 +4,24 @@
 
   // API-docs panel (Workstream G4 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   // Live over engine item 123 (C1 resource routes + C3 OpenAPI doc, merged
-  // via PR #223 on unidb main). Verified against src/server/rest_resource.rs
-  // directly — docs/REST_API.md does not document /rest/v1 at all yet, even
-  // though the route shipped (a real doc-staleness gap, not a Studio
-  // workaround; flagged in the plan doc rather than guessed around).
+  // via PR #223; C2 embedded-resource expansion merged via PR #227) on
+  // unidb main. Verified against src/server/rest_resource.rs directly —
+  // docs/REST_API.md initially didn't document /rest/v1 at all despite the
+  // route shipping; that gap has since been fixed upstream (a "C1 —
+  // Resource routes" + "C2 — Embedded resource expansion" section now
+  // exists), so this panel is built against the documented contract now.
   //
-  // Two parts: (1) a schema + copy-paste curl viewer generated straight from
-  // GET /rest/v1 (the engine's own OpenAPI doc — every value here is engine
-  // data, never invented), and (2) a live GET explorer over
-  // /rest/v1/<table> exercising the real select/filter/order/limit/offset
-  // query surface, per the C1 operator allow-list
-  // (eq/neq/gt/gte/lt/lte/like/ilike/in/is).
+  // Three parts: (1) a schema + copy-paste curl viewer generated straight
+  // from GET /rest/v1 (the engine's own OpenAPI doc — every value here is
+  // engine data, never invented), (2) embedded-resource (C2) support layered
+  // on top — forward/reverse FK embed options derived from the SAME real
+  // catalog FK metadata the Schema tab's ERD uses (`relationships` prop,
+  // owned by App.svelte's getSchema()), not guessed or hardcoded — and (3) a
+  // live GET explorer over /rest/v1/<table> exercising the real
+  // select/filter/order/limit/offset query surface, per the C1 operator
+  // allow-list (eq/neq/gt/gte/lt/lte/like/ilike/in/is).
+
+  let { relationships = [] } = $props();
 
   let loading   = $state(true);
   let error     = $state(null);
@@ -92,6 +99,34 @@
     resetExplorer();
   }
 
+  // ── C2: embedded resource expansion ─────────────────────────────────────
+  // Derives embeddable relation names from REAL foreign-key metadata
+  // (`relationships`, the same catalog data the Schema ERD renders — see
+  // App.svelte's getSchema()), per REST_API.md's C2 rules: forward
+  // (many-to-one) embeds the referenced table under its own name; reverse
+  // (one-to-many) embeds the child table under its own name. Composite
+  // (multi-column) FKs are out of C2's v1 scope, so those relationships are
+  // skipped here too. When two forward FKs on the same base table target
+  // the same table, the bare table-name alias is ambiguous (`400
+  // AMBIGUOUS_RELATIONSHIP` per the contract) — fall back to the FK
+  // column's own name (or that column with a trailing `_id` stripped),
+  // exactly the alternate form C2 documents.
+  function embedOptionsFor(table) {
+    const forward = relationships.filter((r) => r.fromTable === table && r.fromColumns.length === 1);
+    const reverse = relationships.filter((r) => r.toTable === table && r.toColumns.length === 1);
+    const opts = [];
+    for (const r of forward) {
+      const collides = forward.filter((r2) => r2.toTable === r.toTable).length > 1;
+      const col = r.fromColumns[0];
+      const name = collides ? (col.endsWith('_id') ? col.slice(0, -3) : col) : r.toTable;
+      opts.push({ name, kind: 'forward', relTable: r.toTable });
+    }
+    for (const r of reverse) {
+      opts.push({ name: r.fromTable, kind: 'reverse', relTable: r.fromTable });
+    }
+    return opts;
+  }
+
   // ── snippet builders ──────────────────────────────────────────────────────
   function snippetList(table) {
     return `curl -s "${BASE_URL}/rest/v1/${table}?limit=10" \\\n  -H "Authorization: Bearer $TOKEN"`;
@@ -121,6 +156,17 @@
     if (!pk) return '';
     return `curl -s -X DELETE "${BASE_URL}/rest/v1/${table}?${pk.name}=eq.${exampleValue(pk)}" \\\n  -H "Authorization: Bearer $TOKEN"`;
   }
+  // C2 — embedded resource expansion. Both the base table's and the embedded
+  // table's column names below are real (pulled from GET /rest/v1's own
+  // schema for each), never invented.
+  function snippetEmbed(table) {
+    const opt = embedOptionsFor(table)[0];
+    if (!opt) return null;
+    const baseCols = columnsFor(table).slice(0, 2).map((c) => c.name);
+    const embedCols = columnsFor(opt.relTable).slice(0, 2).map((c) => c.name);
+    const select = `${baseCols.join(',')},${opt.name}(${embedCols.join(',')})`;
+    return `curl -s "${BASE_URL}/rest/v1/${table}?select=${select}&limit=10" \\\n  -H "Authorization: Bearer $TOKEN"`;
+  }
 
   let copiedSnippet = $state(null);
   async function copySnippet(key, text) {
@@ -136,6 +182,7 @@
   let selectCols   = $state('');
   let filters      = $state([]); // [{column, op, value}]
   let orderRows    = $state([]); // [{column, desc}]
+  let embeds       = $state([]); // [{name, cols}] — C2 embedded resources
   let limit        = $state(50);
   let offset       = $state(0);
   let explorerBusy   = $state(false);
@@ -149,6 +196,7 @@
     selectCols = '';
     filters = [];
     orderRows = [];
+    embeds = [];
     limit = 50;
     offset = 0;
     explorerBusy = false;
@@ -156,6 +204,14 @@
     explorerResult = null;
     explorerUrl = null;
     explorerMs = null;
+  }
+
+  function addEmbed() {
+    const opts = embedOptionsFor(selectedTable);
+    embeds = [...embeds, { name: opts[0]?.name ?? '', cols: '' }];
+  }
+  function removeEmbed(i) {
+    embeds = embeds.filter((_, idx) => idx !== i);
   }
 
   function addFilter() {
@@ -194,8 +250,14 @@
         .filter((o) => o.column)
         .map((o) => `${o.column}.${o.desc ? 'desc' : 'asc'}`)
         .join(',');
+      // C2: embed entries (`name(col,col,...)`) sit inside the same
+      // select= param as plain columns, comma-joined alongside them.
+      const embedParts = embeds
+        .filter((e) => e.name)
+        .map((e) => `${e.name}(${e.cols.trim()})`);
+      const selectParts = [selectCols.trim(), ...embedParts].filter(Boolean);
       const out = await restGet(selectedTable, {
-        select: selectCols.trim() || undefined,
+        select: selectParts.length ? selectParts.join(',') : undefined,
         filterParams,
         order: order || undefined,
         limit,
@@ -288,6 +350,7 @@
             {#each [
               ['List (first 10)', 'list', snippetList(selectedTable)],
               ['Filtered + column projection', 'filtered', snippetFiltered(selectedTable)],
+              ['Embedded resource (C2)', 'embed', snippetEmbed(selectedTable)],
               ['Insert', 'insert', snippetInsert(selectedTable)],
               ['Update (by primary key)', 'update', snippetUpdate(selectedTable)],
               ['Delete (by primary key)', 'delete', snippetDelete(selectedTable)],
@@ -361,6 +424,22 @@
                   {/each}
                   <button class="ghost small-btn" onclick={addOrder}>+ Add order</button>
                 </div>
+
+                {#if embedOptionsFor(selectedTable).length}
+                  <div class="field">
+                    <span class="flabel">Embedded resources (C2 — <code>name(col,...)</code>, blank = all columns)</span>
+                    {#each embeds as e, i}
+                      <div class="filter-row">
+                        <select bind:value={e.name}>
+                          {#each embedOptionsFor(selectedTable) as opt}<option value={opt.name}>{opt.name} ({opt.kind})</option>{/each}
+                        </select>
+                        <input bind:value={e.cols} placeholder="e.g. id,name" class="mono-input" />
+                        <button class="del-btn" onclick={() => removeEmbed(i)}>✕</button>
+                      </div>
+                    {/each}
+                    <button class="ghost small-btn" onclick={addEmbed}>+ Add embed</button>
+                  </div>
+                {/if}
 
                 <div class="limit-row">
                   <label class="field">

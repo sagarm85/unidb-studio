@@ -443,18 +443,18 @@ export async function getAuthzSnapshot() {
  * Columns: name, table_name, operation, using_expr, with_check_expr, enforced.
  * Degrades to `{ supported: false }` on a pre-item-24 server.
  */
-// `target_roles` on `unidb_catalog.policies` is feature-detected, not
-// assumed: as of this session the column doesn't exist yet (verified against
-// src/sql/information_schema.rs on unidb main — the relation's column list
-// is still `(name, table_name, operation, using_expr, with_check_expr,
-// enforced)`), but the engine owner is adding it imminently so the panel can
-// show which existing policies are `TO <role,…>` scoped. `null` here means
-// "column absent — caller must fall back to an unscoped display", tracked
-// once per session by the caller rather than re-probed on every load.
+// `target_roles` on `unidb_catalog.policies` shipped in PR #225 (item 4):
+// a comma-joined, alphabetically-sorted role list, or the literal `"*"` for
+// a policy with no `TO` clause (applies to every caller) — verified against
+// `src/sql/information_schema.rs::policies_rows` on unidb main. Still
+// feature-detected (not assumed) so the Studio keeps working against an
+// older server that predates this column: the widened `SELECT` is tried
+// first, and a confirmed `COLUMN_NOT_FOUND` is remembered for the session
+// rather than re-probed on every load.
 let targetRolesColumnKnownAbsent = false;
 
 function normalizeTargetRoles(raw) {
-  if (raw == null || raw === '') return [];
+  if (raw == null || raw === '' || raw === '*') return [];
   if (Array.isArray(raw)) return raw;
   return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
 }
@@ -642,13 +642,26 @@ async function authFlowPost(path, body) {
     throw transportError(err);
   }
   if (!res.ok) throw await toApiError(res);
-  const j = await res.json();
+  return res.json();
+}
+
+function toSession(j) {
   return { accessToken: j.access_token ?? j.token, refreshToken: j.refresh_token, expiresIn: j.expires_in };
 }
 
-/** POST /auth/login — password login (item 121 A1/A2). */
+/**
+ * POST /auth/login — password login (item 121 A1/A2). When the user has
+ * TOTP MFA enabled (item 127), the engine issues **no session** — instead
+ * `{mfa_required: true, challenge, expires_in}` (5-minute TTL), redeemed via
+ * `mfaChallenge()` below. The two response shapes are distinguished by the
+ * presence of `mfa_required` (verified against REST_API.md's `POST
+ * /auth/login` docs), so callers must check `.mfaRequired` before assuming
+ * `.accessToken` is set.
+ */
 export async function authLogin(username, password) {
-  return authFlowPost('/auth/login', { username, password });
+  const j = await authFlowPost('/auth/login', { username, password });
+  if (j.mfa_required) return { mfaRequired: true, challenge: j.challenge, expiresIn: j.expires_in };
+  return { mfaRequired: false, ...toSession(j) };
 }
 
 /**
@@ -657,12 +670,12 @@ export async function authLogin(username, password) {
  * `signup_enabled`, which the panel checks before offering this).
  */
 export async function authSignup(username, password) {
-  return authFlowPost('/auth/signup', { username, password });
+  return toSession(await authFlowPost('/auth/signup', { username, password }));
 }
 
 /** POST /auth/refresh — exchange a refresh token for a new access+refresh pair (item 121 A4). */
 export async function authRefresh(refreshToken) {
-  return authFlowPost('/auth/refresh', { refresh_token: refreshToken });
+  return toSession(await authFlowPost('/auth/refresh', { refresh_token: refreshToken }));
 }
 
 /**
@@ -682,6 +695,211 @@ export async function authLogout(refreshToken) {
     throw transportError(err);
   }
   if (!res.ok) throw await toApiError(res);
+}
+
+// ---- active sessions (item 4; G1 "active sessions" panel) ----------------
+/**
+ * `unidb_catalog.sessions` — one row per refresh-token session (item 4,
+ * shipped PR #225). Columns: session_id, username, created_at, expires_at
+ * (both epoch **seconds** — verified against `authz::now_secs()` on unidb
+ * main, not milliseconds like the storage timestamps), revoked. Never the
+ * raw refresh token or its hash. Visibility mirrors item 111: a superuser
+ * (or open/bootstrap mode) sees every session; a named non-superuser sees
+ * only their own. Degrades to `{ supported: false }` on a pre-item-4 server.
+ */
+export async function listSessions() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  try {
+    const rows = await catalogRows(
+      `SELECT session_id, username, created_at, expires_at, revoked
+       FROM unidb_catalog.sessions ORDER BY created_at DESC`,
+    );
+    return {
+      supported: true,
+      sessions: rows.map((r) => ({
+        sessionId: r.session_id,
+        username: r.username,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        revoked: !!r.revoked,
+      })),
+    };
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) return { supported: false, sessions: [] };
+    throw e;
+  }
+}
+
+/**
+ * DELETE /auth/sessions/{id} — revoke one session by its opaque session_id
+ * (item 4). Self/superuser gated server-side; idempotent and always 204
+ * (unknown id or someone else's session are both a silent no-op, by design —
+ * see REST_API.md).
+ */
+export async function revokeSession(sessionId) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- TOTP multi-factor authentication (item 127, Workstream D4; PR #229) -
+// Self-contained TOTP second factor: enroll -> verify (flips MFA on, issues
+// one-time recovery codes) -> a later login returns a `challenge` instead of
+// a session -> mfaChallenge() redeems it. Every route below is JWT-gated
+// EXCEPT mfaChallenge (the challenge token itself is the credential, same
+// posture as /auth/refresh — see REST_API.md's "TOTP-based multi-factor
+// authentication" section). Never persisted client-side beyond this
+// session's in-memory state — the secret/recovery codes are shown once by
+// the engine itself and this module doesn't cache them either.
+
+/**
+ * POST /auth/mfa/enroll — start enrollment. Returns the fresh TOTP secret +
+ * an `otpauth://` URI to render as a QR code. MFA is NOT enabled yet — call
+ * mfaVerify() with a live code to confirm.
+ */
+export async function mfaEnroll() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/enroll`, { method: 'POST', headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, secret: j.secret, otpauthUrl: j.otpauth_url };
+}
+
+/**
+ * POST /auth/mfa/verify — confirm a pending enrollment with a live 6-digit
+ * code. On success MFA flips to enabled and the engine returns 8 one-time
+ * recovery codes — shown to the user exactly once, never re-fetchable.
+ */
+export async function mfaVerify(code) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/verify`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ code }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { enabled: !!j.enabled, recoveryCodes: j.recovery_codes ?? [] };
+}
+
+/**
+ * POST /auth/mfa/challenge — redeem the `{challenge}` a POST /auth/login
+ * returned (in place of a session) plus a live TOTP or recovery code, for a
+ * real session. Public route (no bearer token — the challenge IS the
+ * credential); rate-limited like login/signup/refresh.
+ */
+export async function mfaChallenge(challenge, code) {
+  const j = await authFlowPost('/auth/mfa/challenge', { challenge, code });
+  return toSession(j);
+}
+
+/**
+ * POST /auth/mfa/disable — turn MFA off for the caller's own account.
+ * Requires a live TOTP/recovery `code` unless the caller is a superuser
+ * (emergency recovery path — no code needed then).
+ */
+export async function mfaDisable(code) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/disable`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(code ? { code } : {}),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- OAuth 2.0 social login (item 128, Workstream D1; PR #230) -----------
+// `GET /auth/oauth/{provider}/authorize` is a real browser redirect (302 to
+// the provider) — clicking "Sign in with Google/GitHub" navigates the whole
+// tab there directly, it is never fetched. The only thing this module does
+// is *feature-detect* which of the two known provider names
+// (`google`/`github`) are actually configured, so the panel can hide a
+// button that would otherwise 404. Per REST_API.md: an unconfigured
+// provider's authorize/callback routes both return a plain `404`,
+// indistinguishable from a non-existent route — there is no `GET /auth/meta`
+// field listing configured providers. Detection technique: fetch the
+// authorize URL with `redirect: 'manual'` so the browser does NOT follow a
+// real redirect (no navigation, no request ever reaches Google/GitHub) —
+// a configured provider yields an opaque redirect response (immediately
+// discarded), an unconfigured one yields a normal, readable 404. Both
+// authorize/callback are explicitly NOT rate-limited (REST_API.md), so
+// probing both provider names on every panel load is safe.
+
+const OAUTH_PROVIDERS = ['google', 'github'];
+
+export function oauthAuthorizeUrl(provider) {
+  return `${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/authorize`;
+}
+
+async function oauthProviderConfigured(provider) {
+  try {
+    const res = await fetch(oauthAuthorizeUrl(provider), { redirect: 'manual' });
+    // A same-origin fetch with redirect:'manual' never exposes the redirect
+    // target — a real 302 collapses to an opaque response (status 0, type
+    // 'opaqueredirect'). Anything else (a normal, readable response) means
+    // no redirect happened, i.e. the provider isn't configured (404).
+    return res.type === 'opaqueredirect' || res.status === 0;
+  } catch {
+    return false; // transport failure — treat as "can't tell, hide it"
+  }
+}
+
+/**
+ * Feature-detects which OAuth providers are configured on this server (see
+ * above for the technique). Returns `{google: bool, github: bool}`. Never
+ * throws — an unreachable server just reports every provider as
+ * unconfigured, matching the panel's existing "degrade gracefully" pattern.
+ */
+export async function getOauthProviders() {
+  if (!IS_CONFIGURED) return Object.fromEntries(OAUTH_PROVIDERS.map((p) => [p, false]));
+  const results = await Promise.all(OAUTH_PROVIDERS.map((p) => oauthProviderConfigured(p)));
+  return Object.fromEntries(OAUTH_PROVIDERS.map((p, i) => [p, results[i]]));
+}
+
+/**
+ * GET /auth/oauth/{provider}/callback?code=...&state=... — completes the
+ * OAuth flow. Called with a plain `fetch` (not a browser navigation) when
+ * the Studio's own origin is configured as the provider's
+ * `_REDIRECT_URI` and the tab lands back with `?code=&state=` in its own
+ * URL — see AuthPanel.svelte's `checkOauthCallback()`, which is the piece
+ * that actually detects that landing. Public route (the provider's
+ * redirect itself is the credential, same posture as `/auth/refresh`).
+ */
+export async function oauthCallback(provider, code, state) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ code, state });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/callback?${qs}`);
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return toSession(await res.json());
 }
 
 // ---- observability (item 21) --------------------------------------------
@@ -959,12 +1177,21 @@ function parseSseFrame(frame) {
   return out;
 }
 
-// ── Storage (item 31) ────────────────────────────────────────────────────────
+// ── Storage (item 31; per-object authorization item 120/F1, PR #226) ─────────
 // Routes: GET/POST /storage/buckets, DELETE /storage/buckets/{name},
 //         GET /storage/{bucket}/objects, PUT/DELETE /storage/{bucket}/objects/{*key},
 //         GET /storage/{bucket}/presign/{*key}
 // Returns { supported: false } on 404 (pre-item-31 engine) or 503
 // (item-31 engine with STORAGE_BACKEND not configured).
+//
+// F1: every object route now authorizes against the caller's identity —
+// ownership (`created_by`/`owner`, stamped from the caller's JWT `sub` at
+// PUT time), a bucket's `is_public` read-exemption, or a superuser/
+// `service_role` bypass. Listing filters silently (never 403s); write/delete/
+// presign 403 STORAGE_FORBIDDEN when the caller isn't the owner and no
+// exemption applies — see REST_API.md's "Per-object authorization" section.
+// This module doesn't re-implement any of that; it just surfaces the fields
+// (`is_public`, `owner`) and lets a 403 propagate as a normal ApiError.
 
 export async function listBuckets() {
   let res;
@@ -982,7 +1209,11 @@ export async function createBucket(name, { isPublic = false } = {}) {
   const res = await fetch(`${BASE_URL}/storage/buckets`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, public: isPublic }),
+    // Wire field is `is_public` (verified against src/server/storage.rs's
+    // CreateBucketRequest on unidb main) — NOT `public`. Repeating
+    // create_bucket for an existing name is a no-op and does not update
+    // this flag (no route exists to change it after creation).
+    body: JSON.stringify({ name, is_public: isPublic }),
   });
   if (!res.ok) throw await toApiError(res);
 }
@@ -1022,7 +1253,24 @@ export async function uploadObject(bucket, key, file, onProgress) {
     const h = authHeaders({ 'Content-Type': file.type || 'application/octet-stream' });
     Object.entries(h).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     if (onProgress) xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-    xhr.onload  = () => xhr.status < 300 ? resolve() : reject(new Error(`Upload failed: ${xhr.status}`));
+    xhr.onload = () => {
+      if (xhr.status < 300) { resolve(); return; }
+      // F1 (item 120): overwriting another caller's object is a real,
+      // expected 403 STORAGE_FORBIDDEN now — surface the server's own
+      // message/code (same shape every other route's ApiError carries)
+      // instead of a bare status code.
+      let message = `Upload failed: ${xhr.status}`;
+      let code = `HTTP_${xhr.status}`;
+      try {
+        const body = JSON.parse(xhr.responseText);
+        if (body?.error) message = body.error;
+        if (body?.code) code = body.code;
+      } catch { /* non-JSON error body */ }
+      const err = new Error(message);
+      err.code = code;
+      err.status = xhr.status;
+      reject(err);
+    };
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.send(file);
   });
@@ -1046,4 +1294,112 @@ export async function getObjectUrl(bucket, key, expirySecs = 3600) {
   if (!res.ok) throw await toApiError(res);
   const j = await res.json();
   return j.presigned_get_url;
+}
+
+// ── GraphQL (item 130, Workstream C4; PR #232) ────────────────────────────
+// POST /graphql — schema-derived, read-only (v1) GraphQL endpoint. Mounted
+// under the same require_jwt layer as every other data-plane route (NOT
+// public) and resolves every field through the identical enforced path
+// /sql and /rest/v1 use (authorize_sql_as_principal +
+// execute_sql_params_as_principal) — same RLS/grants, no parallel policy
+// engine. Verified against docs/REST_API.md's "C4 — GraphQL" section and
+// src/server/graphql.rs on unidb main. Standard GraphQL-over-HTTP: always
+// 200 with a `{data, errors}` envelope — a GraphQL-level error (unknown
+// field, PERMISSION_DENIED, …) is data, not a fetch failure, so this only
+// throws for a transport failure or a non-2xx HTTP status.
+
+export async function graphqlRequest(query, variables = null, operationName = null) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const body = { query };
+  if (variables && Object.keys(variables).length) body.variables = variables;
+  if (operationName) body.operationName = operationName;
+  let res;
+  const start = performance.now();
+  try {
+    res = await fetch(`${BASE_URL}/graphql`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  const roundTripMs = performance.now() - start;
+  // Pre-item-130 server: no /graphql route at all.
+  if (res.status === 404) return { supported: false, data: null, errors: null, roundTripMs };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, data: j.data ?? null, errors: j.errors ?? null, roundTripMs };
+}
+
+// Standard GraphQL introspection query (hand-written — this project has no
+// runtime dependency beyond Svelte, so no graphql-js `getIntrospectionQuery`
+// helper). 6 levels of `ofType` nesting covers the deepest wrapping this
+// schema produces (NonNull(List(NonNull(Scalar)))), same depth graphql-js
+// itself uses. Item 130 says introspection (`__schema`/`__type`) is always
+// enabled — verified in the "C4 — GraphQL" section of REST_API.md.
+const TYPE_REF_FRAGMENT = `
+  kind
+  name
+  ofType {
+    kind
+    name
+    ofType {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const INTROSPECTION_QUERY = `
+  query StudioIntrospection {
+    __schema {
+      queryType { name }
+      types {
+        kind
+        name
+        description
+        fields(includeDeprecated: true) {
+          name
+          description
+          args { name type { ${TYPE_REF_FRAGMENT} } defaultValue }
+          type { ${TYPE_REF_FRAGMENT} }
+        }
+        enumValues(includeDeprecated: true) { name }
+      }
+    }
+  }
+`;
+
+/**
+ * Runs the standard introspection query and returns the raw `__schema`
+ * object (types + the root Query type's fields — root fields ARE the
+ * `<table>(...)`/`near_<table>(...)` queryable entry points per item 130).
+ * Degrades to `{ supported: false }` on a pre-item-130 server (404) or one
+ * with introspection unexpectedly disabled (a GraphQL error instead of
+ * data) — the contract says it's always on, but this never assumes that.
+ */
+export async function getGraphqlSchema() {
+  const out = await graphqlRequest(INTROSPECTION_QUERY);
+  if (!out.supported) return { supported: false, schema: null };
+  if (out.errors?.length || !out.data?.__schema) {
+    return { supported: false, schema: null, errors: out.errors ?? null };
+  }
+  return { supported: true, schema: out.data.__schema };
 }

@@ -35,14 +35,14 @@ Five panels, all over `POST /sql` and `GET /tables`:
    only multi-statement-atomicity mechanism). Reports total wall-clock and
    rows/sec.
 
-## Authorization panels (Roles, Policies, Authentication, API Docs)
+## Authorization panels (Roles, Policies, Authentication, API Docs, GraphQL)
 
-Four more panels cover Supabase-parity auth/authorization/API surface, all
-live against unidb main's merged auth + auto-REST contract (PR #222 + #223).
-See [`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for
-the full plan, status, and the two feature-detected pieces that activate
-automatically once specific follow-up engine work lands (existing-user
-password reset; `unidb_catalog.policies` exposing a policy's `TO` roles).
+Five more panels cover Supabase-parity auth/authorization/API surface,
+fully live against unidb main's merged auth + auto-REST + GraphQL contract
+(PR #222 through #234). See
+[`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
+full plan and per-panel verification notes. There are no remaining
+feature-detect stubs in any of these panels.
 
 - **Roles** — users + roles list, transitive role-membership editor, a
   per-table GRANT/REVOKE checkbox matrix, and the three built-in roles
@@ -53,19 +53,58 @@ password reset; `unidb_catalog.policies` exposing a policy's `TO` roles).
   CHECK (…)]` / `DROP POLICY`, with a role-target chip picker and
   helper-insert buttons for `current_user`, `auth.uid()`, and
   `auth.jwt() ->> 'claim'` (always parenthesised, per the documented `->>`
-  precedence caveat), plus **Preview as role** (`POST /auth/preview`).
-- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami` (now also
+  precedence caveat), plus **Preview as role** (`POST /auth/preview`). Each
+  existing policy now shows its actual `target_roles` (from
+  `unidb_catalog.policies`) — a role-chip list when `TO`-scoped, or
+  "(all roles)" for the unscoped `"*"` case.
+- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami` (also
   showing the JWKS discovery URL and signup status), a users list with
-  create-with-password/delete, a reset-password control that quietly
-  activates once the engine accepts `ALTER USER … PASSWORD`, and a flow
-  tester over the real `POST /auth/{login,signup,refresh,logout}` routes —
-  tokens shown are kept in-memory only, never persisted or swapped into the
-  Studio's own admin session token.
+  create-with-password/delete, a **live** reset-password control
+  (`ALTER USER <name> PASSWORD '…'`, superuser-gated), an **active
+  sessions** table (`unidb_catalog.sessions`: session id, user, created,
+  expires, revoked status — never a token/hash) with per-session revoke
+  (`DELETE /auth/sessions/{id}`), a flow tester over the real
+  `POST /auth/{login,signup,refresh,logout}` routes (branching on the
+  `mfa_required` challenge shape when the account has MFA enabled), **TOTP
+  MFA** enroll/verify/disable (`POST /auth/mfa/{enroll,verify,disable}` +
+  the login-time `POST /auth/mfa/challenge` redemption — the secret and
+  `otpauth://` URI are shown for manual entry; recovery codes shown once),
+  and **OAuth sign-in** buttons for Google/GitHub, each independently
+  feature-detected and hidden when its provider isn't configured server-side.
+  Tokens shown in the flow tester are kept in-memory only, never persisted
+  or swapped into the Studio's own admin session token.
 - **API Docs** — a live schema + curl-snippet viewer generated from the
   engine's own `GET /rest/v1` OpenAPI 3 document, plus a **GET explorer**
   exercising the real `select=`/filter (`eq/neq/gt/gte/lt/lte/like/ilike/
-  in/is`)/`order=`/`limit`/`offset` query surface over
-  `/rest/v1/<table>` and rendering results live.
+  in/is`)/`order=`/`limit`/`offset` query surface over `/rest/v1/<table>`
+  and rendering results live — including **embedded resources**
+  (`?select=id,customer(name)` forward, `?select=id,orders(id,total)`
+  reverse), with embed options derived from real foreign-key metadata, not
+  guessed.
+- **GraphQL** — a schema browser over a standard introspection query against
+  the engine's `POST /graphql` (schema-derived, read-only v1), a callout
+  surfacing unidb's two differentiators over a relational-only
+  Supabase/pg_graphql stack (`edges(type, direction)` graph traversal;
+  root `near_<table>(vector, k)` vector similarity), starter queries built
+  from the real schema, and a query editor that runs real queries and
+  renders the real `{data, errors}` response.
+
+## Storage panel
+
+The object-storage browser (buckets/objects over `/storage/*`) now reflects
+per-object authorization (item 120, F1), fully live:
+
+- Buckets carry a **public/private** flag (`is_public`), shown as a badge in
+  both the bucket list and the open bucket's toolbar; creating a bucket
+  exposes the same toggle.
+- Objects show their **owner** (the JWT `sub` that uploaded them) in a
+  dedicated column.
+- Reads, writes, deletes, and presigned-URL issuance are authorized per
+  caller: private buckets are owner-only, public buckets are
+  readable-by-anyone (writes/deletes stay owner-only), and a superuser or
+  `service_role` token bypasses both. The object list simply omits objects
+  the caller can't read (no 403 on list); a blocked write/delete/download
+  surfaces the engine's `STORAGE_FORBIDDEN` as a plain-language message.
 
 ## Configure it (point it at a server)
 

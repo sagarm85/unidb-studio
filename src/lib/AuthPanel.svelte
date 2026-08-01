@@ -1,43 +1,55 @@
 <script>
-  import { getAuthMeta, getWhoami, getAuthzSnapshot, runSql, authLogin, authSignup, authRefresh, authLogout, BASE_URL } from './api.js';
+  import {
+    getAuthMeta, getWhoami, getAuthzSnapshot, runSql,
+    authLogin, authSignup, authRefresh, authLogout,
+    listSessions, revokeSession,
+    mfaEnroll, mfaVerify, mfaChallenge, mfaDisable,
+    getOauthProviders, oauthAuthorizeUrl, oauthCallback,
+    BASE_URL,
+  } from './api.js';
 
   // Authentication panel (Workstream G1 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
-  // Live over the engine's real contract (item 121, merged via PR #222 on
-  // unidb main): GET /auth/meta + GET /auth/whoami (item 100), user
-  // create/delete with an optional password (`CREATE USER … PASSWORD '…'`
-  // over /sql), and the full credentialed flow — POST /auth/{login,signup,
-  // refresh,logout}. Per CLAUDE.md, nothing here is fabricated: what the
-  // engine doesn't yet support is a clearly labeled "not available" card,
-  // never a dead-looking form.
-  //
-  // Password reset for an EXISTING user (`ALTER USER … PASSWORD '…'`) is
-  // feature-detected, not assumed: as of this session it isn't in unidb
-  // main's auth-DDL grammar yet (`src/authz/mod.rs::parse_auth_stmt` has no
-  // ALTER USER arm — confirmed by reading source, not guessed), but the
-  // engine owner has committed to shipping it imminently with that exact
-  // syntax. The control below actually attempts the real statement; a
-  // SQL-parse/unsupported error (the only way an unrecognized statement can
-  // fail) permanently hides it for the rest of this session rather than
-  // repeatedly erroring, and any other error (e.g. a real permission
-  // problem) surfaces normally without disabling the feature — so the
-  // control quietly starts working the moment the server understands it,
-  // with no code change needed here.
-  //
-  // Session listing/revoke-by-id stays a static "not available" card: there
-  // is no route or catalog view for it yet at all (not even a name), so
-  // there is nothing to probe — inventing a URL to try would violate "never
-  // assume an undocumented route."
+  // Live over the engine's real, fully-merged contract (items 100/121/122/4,
+  // 127, 128, through PR #230 on unidb main):
+  //   - GET /auth/meta + GET /auth/whoami (item 100).
+  //   - Users: list/create-with-password/delete, plus reset-password for an
+  //     EXISTING user via `ALTER USER … PASSWORD '…'` (item 4).
+  //   - The full credentialed flow: POST /auth/{login,signup,refresh,logout},
+  //     including the item-127 MFA-challenge branch (login returns
+  //     `{mfa_required, challenge}` instead of a session when the user has
+  //     TOTP enabled).
+  //   - Active sessions: `unidb_catalog.sessions` (item 4) + revoke-by-id via
+  //     `DELETE /auth/sessions/{id}`.
+  //   - TOTP MFA (item 127, D4): enroll -> verify -> recovery codes -> disable,
+  //     reflecting `whoami.mfa_enabled`.
+  //   - OAuth social login (item 128, D1): "Sign in with Google/GitHub"
+  //     against feature-detected providers.
+  // Per CLAUDE.md, nothing here is fabricated: anything the engine doesn't
+  // support is an explicit "not available" state, never a dead-looking form.
   //
   // Production issuer (A5, `UNIDB_JWT_SIGNING_KEY`) and asymmetric JWT/JWKS
-  // (A6, `UNIDB_JWT_PUBLIC_KEY` + `GET /.well-known/jwks.json`) both shipped
-  // in PR #223 — surfaced in the server-config card below via `GET
-  // /auth/meta`'s `dev_login_enabled`, which now reflects either issuer path
-  // (verified in `src/server/handlers.rs::get_auth_meta` — the field name is
-  // a holdover, its meaning broadened; the UI label says so).
+  // (A6, `UNIDB_JWT_PUBLIC_KEY` + `GET /.well-known/jwks.json`) shipped in PR
+  // #223 — surfaced in the server-config card via `GET /auth/meta`'s
+  // `dev_login_enabled`, which now reflects either issuer path (verified in
+  // `src/server/handlers.rs::get_auth_meta` — the field name is a holdover,
+  // its meaning broadened; the UI label says so).
   //
   // Role/grant/membership editing (including the three built-in roles) is
   // the Roles tab's job (G3) — not duplicated here.
+  //
+  // QR rendering for MFA enrollment is deliberately NOT built: this SPA has
+  // no backend, so rendering a QR from the `otpauth://` URI client-side
+  // would mean either (a) vendoring a QR-encoding algorithm — a nontrivial,
+  // easy-to-get-subtly-wrong piece of code (Reed–Solomon ECC, mask-pattern
+  // scoring) that can't be scan-tested in this environment, so a silent bug
+  // would ship a QR image that *looks* right but doesn't scan — or (b)
+  // sending the TOTP secret to a third-party QR image API, a real
+  // secret-exposure bug this codebase's engine-truthful/no-fabrication ethos
+  // would reject outright. Every authenticator app also accepts the raw
+  // base32 secret as manual entry, which is what's shown instead (both the
+  // secret and the full `otpauth://` URI, copy-able) — a real degrade, not a
+  // missing feature dressed up.
 
   let loading  = $state(true);
   let error    = $state(null);
@@ -45,21 +57,28 @@
   let whoami   = $state(null); // GET /auth/whoami
   let users    = $state([]);   // [{name, isSuperuser}]
   let usersSupported = $state(true);
+  let sessions = $state([]);   // [{sessionId, username, createdAt, expiresAt, revoked}]
+  let sessionsSupported = $state(true);
+  let oauthProviders = $state({ google: false, github: false });
 
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  const UNSUPPORTED_SQL_CODES = new Set(['SQL_PARSE_ERROR', 'SQL_UNSUPPORTED', 'SQL_PLAN_ERROR']);
 
-  $effect(() => { load(); });
+  $effect(() => { load(); checkOauthCallback(); });
 
   async function load() {
     loading = true;
     error = null;
     try {
-      const [m, w, snap] = await Promise.all([getAuthMeta(), getWhoami(), getAuthzSnapshot()]);
+      const [m, w, snap, sess, providers] = await Promise.all([
+        getAuthMeta(), getWhoami(), getAuthzSnapshot(), listSessions(), getOauthProviders(),
+      ]);
       meta = m;
       whoami = w;
       usersSupported = snap.supported;
       users = snap.users;
+      sessionsSupported = sess.supported;
+      sessions = sess.sessions;
+      oauthProviders = providers;
     } catch (e) {
       error = { code: e.code, message: e.message, status: e.status };
     } finally {
@@ -117,8 +136,7 @@
     }
   }
 
-  // ── reset an existing user's password (feature-detected; see header note) ─
-  let passwordResetSupported = $state(true); // true = try it; false = confirmed unsupported this session
+  // ── reset an existing user's password (ALTER USER … PASSWORD, item 4) ────
   let resetTarget   = $state(null); // username, or null
   let resetPassword = $state('');
   let resetBusy      = $state(false);
@@ -138,14 +156,34 @@
       await runSql(`ALTER USER ${resetTarget} PASSWORD ${sqlQuoteLiteral(resetPassword)}`);
       resetTarget = null;
     } catch (e) {
-      if (UNSUPPORTED_SQL_CODES.has(e.code)) {
-        passwordResetSupported = false;
-        resetTarget = null;
-      } else {
-        resetError = e.message ?? String(e);
-      }
+      resetError = e.message ?? String(e);
     } finally {
       resetBusy = false;
+    }
+  }
+
+  // ── active sessions (unidb_catalog.sessions + DELETE /auth/sessions/{id}) ─
+  let revokeBusyId = $state(null); // sessionId currently revoking, or null
+  let sessionsError = $state(null);
+
+  // created_at/expires_at are epoch SECONDS (see api.js's listSessions doc).
+  function fmtEpochSecs(secs) {
+    if (secs == null) return '—';
+    return new Date(secs * 1000).toLocaleString();
+  }
+
+  async function doRevokeSession(sessionId) {
+    revokeBusyId = sessionId;
+    sessionsError = null;
+    try {
+      await revokeSession(sessionId);
+      const sess = await listSessions();
+      sessionsSupported = sess.supported;
+      sessions = sess.sessions;
+    } catch (e) {
+      sessionsError = e.message ?? String(e);
+    } finally {
+      revokeBusyId = null;
     }
   }
 
@@ -163,17 +201,49 @@
   let logoutDone   = $state(false);
   let copiedField  = $state(null);
 
+  // item 127: when the account being logged into has TOTP MFA enabled,
+  // POST /auth/login returns {mfa_required, challenge, expires_in} instead
+  // of a session — this holds that pending challenge until redeemed (or it
+  // expires, 5 minutes) at POST /auth/mfa/challenge.
+  let mfaLoginChallenge = $state(null); // { challenge, expiresIn } | null
+  let mfaLoginCode      = $state('');
+  let mfaLoginBusy      = $state(false);
+  let mfaLoginError     = $state(null);
+
   function applyFlowResult(r) {
     flowResult = r;
     flowRefreshInput = r.refreshToken ?? '';
     logoutDone = false;
+    mfaLoginChallenge = null;
   }
 
   async function doLogin() {
-    flowError = null; flowBusy = 'login'; logoutDone = false;
-    try { applyFlowResult(await authLogin(flowUsername.trim(), flowPassword)); }
+    flowError = null; flowBusy = 'login'; logoutDone = false; mfaLoginChallenge = null;
+    try {
+      const r = await authLogin(flowUsername.trim(), flowPassword);
+      if (r.mfaRequired) {
+        mfaLoginChallenge = { challenge: r.challenge, expiresIn: r.expiresIn };
+        mfaLoginCode = '';
+        mfaLoginError = null;
+      } else {
+        applyFlowResult(r);
+      }
+    }
     catch (e) { flowError = e.message ?? String(e); }
     finally { flowBusy = null; }
+  }
+
+  async function doMfaLoginChallenge() {
+    if (!mfaLoginChallenge || !mfaLoginCode) return;
+    mfaLoginBusy = true;
+    mfaLoginError = null;
+    try {
+      applyFlowResult(await mfaChallenge(mfaLoginChallenge.challenge, mfaLoginCode.trim()));
+    } catch (e) {
+      mfaLoginError = e.message ?? String(e);
+    } finally {
+      mfaLoginBusy = false;
+    }
   }
   async function doSignup() {
     flowError = null; flowBusy = 'signup'; logoutDone = false;
@@ -203,21 +273,163 @@
     } catch { /* clipboard unavailable — silently ignore */ }
   }
 
-  // What's still genuinely unavailable — verified against unidb main source,
-  // not assumed. Password reset drops off this list automatically once the
-  // engine responds well to ALTER USER (passwordResetSupported flips false
-  // only after a confirmed unsupported-statement error, see above).
-  const PENDING_STATIC = [
-    { name: 'List / revoke a user’s active sessions', detail: 'Only single-token refresh (rotate) and logout (revoke) exist — no route or catalog view enumerates a user’s sessions yet.', ref: 'gap' },
-  ];
-  const pending = $derived(
-    passwordResetSupported === false
-      ? [
-          { name: 'Reset an existing user’s password', detail: 'This server returned a SQL-parse/unsupported error for ALTER USER … PASSWORD — it doesn’t understand that statement yet. New users can still get a password at creation time (above).', ref: 'gap' },
-          ...PENDING_STATIC,
-        ]
-      : PENDING_STATIC,
-  );
+  // ── TOTP MFA (item 127, D4) — enroll -> verify -> recovery codes; disable ─
+  // Acts on the CALLER's own account (the token this Studio instance is
+  // configured with), same as the "Signed in as" card above — not the users
+  // list, which is a different identity's account.
+  let mfaOpen        = $state(false);  // enroll modal
+  let mfaStep        = $state('start'); // 'start' | 'verify' | 'done'
+  let mfaSecret       = $state(null);
+  let mfaOtpauthUrl   = $state(null);
+  let mfaVerifyCode   = $state('');
+  let mfaRecoveryCodes = $state([]);
+  let mfaBusy         = $state(false);
+  let mfaError        = $state(null);
+
+  function openMfaEnroll() {
+    mfaOpen = true;
+    mfaStep = 'start';
+    mfaSecret = null;
+    mfaOtpauthUrl = null;
+    mfaVerifyCode = '';
+    mfaRecoveryCodes = [];
+    mfaError = null;
+  }
+
+  async function startMfaEnroll() {
+    mfaBusy = true;
+    mfaError = null;
+    try {
+      const out = await mfaEnroll();
+      if (!out.supported) { mfaError = "This server doesn't expose POST /auth/mfa/enroll yet."; return; }
+      mfaSecret = out.secret;
+      mfaOtpauthUrl = out.otpauthUrl;
+      mfaStep = 'verify';
+    } catch (e) {
+      mfaError = e.message ?? String(e);
+    } finally {
+      mfaBusy = false;
+    }
+  }
+
+  async function submitMfaVerify() {
+    if (!mfaVerifyCode) { mfaError = 'Enter the 6-digit code from your authenticator app.'; return; }
+    mfaBusy = true;
+    mfaError = null;
+    try {
+      const out = await mfaVerify(mfaVerifyCode.trim());
+      mfaRecoveryCodes = out.recoveryCodes;
+      mfaStep = 'done';
+      await load(); // refresh whoami.mfa_enabled
+    } catch (e) {
+      mfaError = e.message ?? String(e);
+    } finally {
+      mfaBusy = false;
+    }
+  }
+
+  function closeMfaEnroll() {
+    mfaOpen = false;
+  }
+
+  let mfaDisableOpen  = $state(false);
+  let mfaDisableCode  = $state('');
+  let mfaDisableBusy  = $state(false);
+  let mfaDisableError = $state(null);
+
+  function openMfaDisable() {
+    mfaDisableOpen = true;
+    mfaDisableCode = '';
+    mfaDisableError = null;
+  }
+
+  async function submitMfaDisable() {
+    if (!whoami.is_superuser && !mfaDisableCode) {
+      mfaDisableError = 'Enter a live TOTP or recovery code.';
+      return;
+    }
+    mfaDisableBusy = true;
+    mfaDisableError = null;
+    try {
+      await mfaDisable(mfaDisableCode.trim() || null);
+      mfaDisableOpen = false;
+      await load();
+    } catch (e) {
+      mfaDisableError = e.message ?? String(e);
+    } finally {
+      mfaDisableBusy = false;
+    }
+  }
+
+  async function copyMfaField(field, value) {
+    await copyField(field, value);
+  }
+
+  // ── OAuth 2.0 social login (item 128, D1) ─────────────────────────────────
+  // "Sign in with Google/GitHub" is a REAL browser redirect
+  // (GET /auth/oauth/{provider}/authorize -> 302 to the provider), not a
+  // fetch — it navigates the whole tab away from the Studio. For the
+  // callback to land back in THIS panel (a static SPA with no backend of
+  // its own to run a server-side callback), the deployment's
+  // `UNIDB_OAUTH_<PROVIDER>_REDIRECT_URI` needs to point back at the
+  // Studio's own origin (e.g. `<studio-origin>/?tab=auth`) — App.svelte
+  // already restores the `?tab=` on load, so that lands here. This module
+  // then forwards the provider's `?code=&state=` to the engine's own
+  // `GET /auth/oauth/{provider}/callback` as a plain (CORS) fetch to finish
+  // the flow. This is a real, working integration when the redirect_uri is
+  // configured that way — not assumed/fabricated behavior; if it isn't
+  // configured that way (e.g. redirect_uri points straight at the engine),
+  // the provider's callback response (raw JSON) just lands outside the SPA,
+  // same as it would for any other backend-less static-SPA OAuth consumer.
+  const OAUTH_PENDING_KEY = 'unidb_studio_oauth_pending_provider';
+  let oauthError = $state(null);
+  let oauthCallbackBusy = $state(false);
+
+  function startOauth(provider) {
+    try { sessionStorage.setItem(OAUTH_PENDING_KEY, provider); } catch { /* storage unavailable */ }
+    window.location.href = oauthAuthorizeUrl(provider);
+  }
+
+  function stripOauthQueryParams() {
+    const url = new URL(window.location.href);
+    let changed = false;
+    for (const k of ['code', 'state', 'error']) {
+      if (url.searchParams.has(k)) { url.searchParams.delete(k); changed = true; }
+    }
+    if (changed) history.replaceState({}, '', url.toString());
+  }
+
+  async function checkOauthCallback() {
+    const params = new URLSearchParams(window.location.search);
+    let pending = null;
+    try { pending = sessionStorage.getItem(OAUTH_PENDING_KEY); } catch { /* storage unavailable */ }
+
+    if (params.get('error')) {
+      oauthError = `Provider denied the request: ${params.get('error')}`;
+      try { sessionStorage.removeItem(OAUTH_PENDING_KEY); } catch { /* ignore */ }
+      stripOauthQueryParams();
+      return;
+    }
+    if (!params.has('code') || !params.has('state') || !pending) return;
+
+    try { sessionStorage.removeItem(OAUTH_PENDING_KEY); } catch { /* ignore */ }
+    oauthCallbackBusy = true;
+    oauthError = null;
+    try {
+      applyFlowResult(await oauthCallback(pending, params.get('code'), params.get('state')));
+      await load();
+    } catch (e) {
+      oauthError = e.message ?? String(e);
+    } finally {
+      oauthCallbackBusy = false;
+      stripOauthQueryParams();
+    }
+  }
+
+  // No remaining "not available" gaps for G1 as of PR #230 — password
+  // reset, session listing/revoke, MFA enroll/verify/disable, and OAuth
+  // sign-in are all live below (OAuth buttons are feature-detected per
+  // provider and simply absent when unconfigured).
 </script>
 
 <div class="auth">
@@ -297,6 +509,18 @@
                 <span class="muted small">none (or superuser — bypasses grants)</span>
               {/if}
             </dd>
+            <dt>TOTP MFA (<code>whoami.mfa_enabled</code>)</dt>
+            <dd>
+              {#if whoami.mfa_enabled == null}
+                <span class="muted small">not reported by this server (pre-item-127)</span>
+              {:else if whoami.mfa_enabled}
+                <span class="pill ok">enabled</span>
+                <button class="link-btn" onclick={openMfaDisable}>Disable</button>
+              {:else}
+                <span class="pill muted">not enabled</span>
+                <button class="link-btn" onclick={openMfaEnroll}>Enroll</button>
+              {/if}
+            </dd>
           </dl>
         {/if}
       </section>
@@ -318,9 +542,7 @@
               <span class="mono">{u.name}</span>
               {#if u.isSuperuser}<span class="pill super">superuser</span>{/if}
               <span class="grow"></span>
-              {#if passwordResetSupported !== false}
-                <button class="link-btn" title="Reset password" onclick={() => openReset(u.name)}>Reset password</button>
-              {/if}
+              <button class="link-btn" title="Reset password" onclick={() => openReset(u.name)}>Reset password</button>
               <button class="del-btn" title="Drop user" onclick={() => deleteUser(u.name)}>✕</button>
             </li>
           {/each}
@@ -329,9 +551,52 @@
       <p class="muted small foot-note">
         Password is optional at creation (needed only if this user will use password login/signup
         below). Role membership and table grants are managed in the <strong>Roles</strong> tab.
-        {#if passwordResetSupported === false}
-          Resetting an existing user's password isn't supported by this server yet.
-        {/if}
+      </p>
+    </section>
+
+    <section class="card">
+      <h3>Active sessions</h3>
+      {#if !sessionsSupported}
+        <p class="muted small">This server doesn't expose <code>unidb_catalog.sessions</code> yet.</p>
+      {:else if sessions.length === 0}
+        <p class="muted small">No sessions yet — issue one via login/signup/refresh below.</p>
+      {:else}
+        {#if sessionsError}<p class="err small">{sessionsError}</p>{/if}
+        <table class="session-table">
+          <thead>
+            <tr><th>Session</th><th>User</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {#each sessions as s}
+              <tr class:revoked-row={s.revoked}>
+                <td class="mono session-id" title={s.sessionId}>{s.sessionId.slice(0, 12)}…</td>
+                <td class="mono">{s.username}</td>
+                <td class="small">{fmtEpochSecs(s.createdAt)}</td>
+                <td class="small">{fmtEpochSecs(s.expiresAt)}</td>
+                <td>
+                  {#if s.revoked}
+                    <span class="pill muted">revoked</span>
+                  {:else}
+                    <span class="pill ok">active</span>
+                  {/if}
+                </td>
+                <td>
+                  {#if !s.revoked}
+                    <button class="link-btn" onclick={() => doRevokeSession(s.sessionId)} disabled={revokeBusyId === s.sessionId}>
+                      {revokeBusyId === s.sessionId ? 'Revoking…' : 'Revoke'}
+                    </button>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+      <p class="muted small foot-note">
+        A superuser sees every session; a named non-superuser sees (and may revoke) only their own —
+        server-enforced, not filtered client-side. Revoking here is per-session
+        (<code>DELETE /auth/sessions/{'{id}'}</code>); the flow tester below still uses
+        <code>POST /auth/logout</code> for the token you're currently holding.
       </p>
     </section>
 
@@ -366,6 +631,47 @@
               {flowBusy === 'signup' ? 'Signing up…' : 'Signup'}
             </button>
           </div>
+          {#if mfaLoginChallenge}
+            <div class="mfa-challenge">
+              <p class="muted small">
+                This account has MFA enabled — enter a live TOTP or recovery code to finish
+                signing in (challenge expires in {mfaLoginChallenge.expiresIn}s).
+              </p>
+              <div class="mfa-challenge-row">
+                <input
+                  bind:value={mfaLoginCode}
+                  placeholder="123456"
+                  class="mono-input"
+                  spellcheck="false"
+                  onkeydown={(e) => e.key === 'Enter' && doMfaLoginChallenge()}
+                />
+                <button onclick={doMfaLoginChallenge} disabled={mfaLoginBusy || !mfaLoginCode}>
+                  {mfaLoginBusy ? 'Verifying…' : 'Verify'}
+                </button>
+              </div>
+              {#if mfaLoginError}<p class="err small">{mfaLoginError}</p>{/if}
+            </div>
+          {/if}
+          {#if oauthProviders.google || oauthProviders.github}
+            <div class="oauth-row">
+              <span class="flabel">Or sign in with</span>
+              <div class="oauth-btns">
+                {#if oauthProviders.google}
+                  <button class="ghost oauth-btn" onclick={() => startOauth('google')}>Google</button>
+                {/if}
+                {#if oauthProviders.github}
+                  <button class="ghost oauth-btn" onclick={() => startOauth('github')}>GitHub</button>
+                {/if}
+              </div>
+              <p class="muted small">
+                Real browser redirect to <code>GET /auth/oauth/&lt;provider&gt;/authorize</code> —
+                leaves this page. Lands back here only if this server's
+                <code>_REDIRECT_URI</code> points at the Studio's own origin.
+              </p>
+            </div>
+          {/if}
+          {#if oauthCallbackBusy}<p class="muted small">Completing OAuth sign-in…</p>{/if}
+          {#if oauthError}<p class="err small">{oauthError}</p>{/if}
         </div>
 
         <div class="flow-form">
@@ -411,25 +717,6 @@
       {/if}
     </section>
 
-    <section class="card pending-card">
-      <h3>Still not available</h3>
-      <p class="muted small">
-        Verified against unidb main's source (not assumed) — shown so nothing above pretends to
-        cover ground it doesn't.
-      </p>
-      <ul class="pending-list">
-        {#each pending as item}
-          <li>
-            <span class="pending-badge">{item.ref}</span>
-            <div>
-              <div class="pending-name">{item.name}</div>
-              <div class="pending-detail">{item.detail}</div>
-            </div>
-            <span class="pill muted">not available</span>
-          </li>
-        {/each}
-      </ul>
-    </section>
   {/if}
 </div>
 
@@ -477,9 +764,7 @@
       </div>
       <div class="modal-body">
         <p class="muted small">
-          Attempts <code>ALTER USER {resetTarget} PASSWORD '…'</code> — not yet in this engine's
-          shipped auth DDL as of this session; if the server doesn't recognize it, this control
-          hides itself for the rest of the session instead of erroring repeatedly.
+          Runs <code>ALTER USER {resetTarget} PASSWORD '…'</code> (superuser-gated).
         </p>
         <label class="field">
           <span class="flabel">New password</span>
@@ -491,6 +776,121 @@
         <span class="grow"></span>
         <button class="ghost" onclick={() => (resetTarget = null)}>Cancel</button>
         <button onclick={submitReset} disabled={resetBusy}>{resetBusy ? 'Resetting…' : 'Reset password'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ── MFA enroll modal (item 127) ── -->
+{#if mfaOpen}
+  <div class="modal-backdrop" role="presentation" onpointerdown={closeMfaEnroll}>
+    <div class="modal" role="dialog" aria-label="Enroll MFA" onpointerdown={(e) => e.stopPropagation()}>
+      <div class="modal-head">
+        <strong>Enroll TOTP MFA</strong>
+        <button class="x" onclick={closeMfaEnroll}>✕</button>
+      </div>
+      <div class="modal-body">
+        {#if mfaStep === 'start'}
+          <p class="muted small">
+            Runs <code>POST /auth/mfa/enroll</code> for your own account ({whoami?.user}).
+            Generates a fresh TOTP secret — not enabled yet until you confirm it below with a
+            live code.
+          </p>
+          {#if mfaError}<p class="err">{mfaError}</p>{/if}
+        {:else if mfaStep === 'verify'}
+          <p class="muted small">
+            Add this to your authenticator app (Google Authenticator, 1Password, Authy, …),
+            then enter the 6-digit code it shows to confirm.
+          </p>
+          <label class="field">
+            <span class="flabel">Secret (manual entry)</span>
+            <div class="token-value">
+              <code class="mono truncate">{mfaSecret}</code>
+              <button class="copy-btn" onclick={() => copyMfaField('mfa-secret', mfaSecret)}>
+                {copiedField === 'mfa-secret' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="flabel">otpauth:// URI</span>
+            <div class="token-value">
+              <code class="mono truncate">{mfaOtpauthUrl}</code>
+              <button class="copy-btn" onclick={() => copyMfaField('mfa-uri', mfaOtpauthUrl)}>
+                {copiedField === 'mfa-uri' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span class="flabel">6-digit code</span>
+            <input
+              bind:value={mfaVerifyCode}
+              placeholder="123456"
+              class="mono-input"
+              spellcheck="false"
+              onkeydown={(e) => e.key === 'Enter' && submitMfaVerify()}
+            />
+          </label>
+          {#if mfaError}<p class="err">{mfaError}</p>{/if}
+        {:else if mfaStep === 'done'}
+          <p class="ok-note">MFA enabled. Save these one-time recovery codes now — shown only once,
+            never re-fetchable.</p>
+          <div class="recovery-codes">
+            {#each mfaRecoveryCodes as c}<code class="mono">{c}</code>{/each}
+          </div>
+          <button class="ghost small-btn" onclick={() => copyMfaField('mfa-recovery', mfaRecoveryCodes.join('\n'))}>
+            {copiedField === 'mfa-recovery' ? 'Copied' : 'Copy all'}
+          </button>
+        {/if}
+      </div>
+      <div class="modal-foot">
+        <span class="grow"></span>
+        {#if mfaStep === 'start'}
+          <button class="ghost" onclick={closeMfaEnroll}>Cancel</button>
+          <button onclick={startMfaEnroll} disabled={mfaBusy}>{mfaBusy ? 'Starting…' : 'Start enrollment'}</button>
+        {:else if mfaStep === 'verify'}
+          <button class="ghost" onclick={closeMfaEnroll}>Cancel</button>
+          <button onclick={submitMfaVerify} disabled={mfaBusy || !mfaVerifyCode}>{mfaBusy ? 'Verifying…' : 'Verify & enable'}</button>
+        {:else}
+          <button onclick={closeMfaEnroll}>Done</button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ── MFA disable modal (item 127) ── -->
+{#if mfaDisableOpen}
+  <div class="modal-backdrop" role="presentation" onpointerdown={() => (mfaDisableOpen = false)}>
+    <div class="modal" role="dialog" aria-label="Disable MFA" onpointerdown={(e) => e.stopPropagation()}>
+      <div class="modal-head">
+        <strong>Disable MFA</strong>
+        <button class="x" onclick={() => (mfaDisableOpen = false)}>✕</button>
+      </div>
+      <div class="modal-body">
+        {#if whoami?.is_superuser}
+          <p class="muted small">
+            Superuser emergency path — no code required (<code>POST /auth/mfa/disable</code>
+            with an empty body).
+          </p>
+        {:else}
+          <p class="muted small">Enter a live TOTP or recovery code to confirm.</p>
+          <label class="field">
+            <span class="flabel">Code</span>
+            <input
+              bind:value={mfaDisableCode}
+              placeholder="123456 or a1b2c3-d4e5f6"
+              class="mono-input"
+              spellcheck="false"
+              onkeydown={(e) => e.key === 'Enter' && submitMfaDisable()}
+            />
+          </label>
+        {/if}
+        {#if mfaDisableError}<p class="err">{mfaDisableError}</p>{/if}
+      </div>
+      <div class="modal-foot">
+        <span class="grow"></span>
+        <button class="ghost" onclick={() => (mfaDisableOpen = false)}>Cancel</button>
+        <button onclick={submitMfaDisable} disabled={mfaDisableBusy}>{mfaDisableBusy ? 'Disabling…' : 'Disable MFA'}</button>
       </div>
     </div>
   </div>
@@ -579,19 +979,35 @@
   }
   .copy-btn:hover { color: var(--text); border-color: var(--accent); }
 
-  .pending-card { background: var(--panel-alt); }
-  .pending-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .pending-list li {
-    display: flex; align-items: center; gap: 10px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+  .session-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .session-table th, .session-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+  .session-table th { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .session-table tr:last-child td { border-bottom: none; }
+  .session-table tr.revoked-row { opacity: 0.6; }
+  .session-id { white-space: nowrap; }
+
+  .mfa-challenge {
+    margin-top: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel-alt);
   }
-  .pending-badge {
-    font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--muted);
-    background: var(--panel-alt); border-radius: 4px; padding: 2px 6px; flex-shrink: 0;
+  .mfa-challenge-row { display: flex; gap: 8px; margin-top: 6px; }
+  .mfa-challenge-row input { flex: 1; min-width: 0; }
+  .mfa-challenge-row button {
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 6px; padding: 7px 14px; font-size: 13px; cursor: pointer; flex-shrink: 0;
   }
-  .pending-name { font-size: 13px; font-weight: 600; }
-  .pending-detail { font-size: 11px; color: var(--muted); margin-top: 1px; }
-  .pending-list li > div:nth-child(2) { flex: 1; min-width: 0; }
+
+  .oauth-row { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+  .oauth-btns { display: flex; gap: 8px; }
+  .oauth-btn { flex: 1; }
+
+  .recovery-codes {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0;
+  }
+  .recovery-codes code {
+    font-family: var(--mono); font-size: 12px; background: var(--panel-alt);
+    border-radius: 4px; padding: 5px 8px; text-align: center;
+  }
 
   .muted { color: var(--muted); }
   .small { font-size: 12px; }

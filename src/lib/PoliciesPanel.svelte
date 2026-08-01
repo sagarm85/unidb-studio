@@ -4,21 +4,17 @@
 
   // Policies editor (Workstream G2 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
-  // Live over the engine's real contract (item 24 + item 122, merged via PR
-  // #222 on unidb main): CREATE/DROP POLICY including the optional
+  // Live over the engine's real, fully-merged contract (items 24/122/4,
+  // through PR #225 on unidb main): CREATE/DROP POLICY including the optional
   // `TO <role,...>` clause, the USING/WITH CHECK predicate editors with
   // helper-insert buttons for `current_user` / `auth.uid()` /
-  // `auth.jwt() ->> 'claim'`, and `POST /auth/preview` ("preview as role").
-  //
-  // KNOWN GAP (flagged, not worked around): `unidb_catalog.policies` does not
-  // expose a policy's `TO` target roles — verified against
-  // src/sql/information_schema.rs on unidb main, whose `policies` column list
-  // is `(name, table_name, operation, using_expr, with_check_expr, enforced)`
-  // only, even though `PolicyDef::target_roles` exists server-side. So this
-  // panel can author role-scoped policies but cannot show which existing
-  // policies are role-scoped, or to which roles — there is no client-side
-  // guess for that; a persistent note says so instead. File a backlog item
-  // upstream (unidb/docs/backlog/) to add the column.
+  // `auth.jwt() ->> 'claim'`, `POST /auth/preview` ("preview as role"), and —
+  // as of item 4 — reading back which existing policies are `TO`-scoped via
+  // `unidb_catalog.policies.target_roles` (a comma-joined, alphabetically
+  // sorted role list, or the literal `"*"` for an unscoped policy; see
+  // `api.js::normalizeTargetRoles`). Still feature-detected via a widened
+  // `SELECT` (falls back to unscoped display on a pre-item-4 `COLUMN_NOT_FOUND`)
+  // so the Studio keeps working against an older server.
   let { tables = [] } = $props();
 
   let supported  = $state(true);
