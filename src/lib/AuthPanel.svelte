@@ -4,14 +4,16 @@
     authLogin, authSignup, authRefresh, authLogout,
     listSessions, revokeSession,
     mfaEnroll, mfaVerify, mfaChallenge, mfaDisable,
-    getOauthProviders, oauthAuthorizeUrl, oauthCallback,
+    getOauthProviders, oauthAuthorizeUrl, oauthCallback, OAUTH_PROVIDER_LABELS,
+    authRecover, authVerifyRecovery, authMagicLink, authMagicLinkVerify,
+    getDevInbox, clearDevInbox,
     BASE_URL,
   } from './api.js';
 
   // Authentication panel (Workstream G1 — see ../../docs/AUTH_POLICY_PANELS_PLAN.md).
   //
   // Live over the engine's real, fully-merged contract (items 100/121/122/4,
-  // 127, 128, through PR #230 on unidb main):
+  // 127, 128, 138, through PR #241 on unidb main):
   //   - GET /auth/meta + GET /auth/whoami (item 100).
   //   - Users: list/create-with-password/delete, plus reset-password for an
   //     EXISTING user via `ALTER USER … PASSWORD '…'` (item 4).
@@ -23,8 +25,24 @@
   //     `DELETE /auth/sessions/{id}`.
   //   - TOTP MFA (item 127, D4): enroll -> verify -> recovery codes -> disable,
   //     reflecting `whoami.mfa_enabled`.
-  //   - OAuth social login (item 128, D1): "Sign in with Google/GitHub"
-  //     against feature-detected providers.
+  //   - OAuth social login (item 128, D1; presets widened to seven by item
+  //     143 part 2): "Sign in with <Provider>" against all seven built-in
+  //     preset providers (google/github/apple/azure/gitlab/discord/
+  //     facebook), each independently feature-detected — a button is simply
+  //     absent when its provider isn't configured server-side.
+  //   - Email auth flows (item 138): trigger password-recovery / magic-link
+  //     emails and redeem the resulting token, below the credentialed flow
+  //     tester. `POST /auth/recover`/`POST /auth/magiclink` always return
+  //     200 (no-account-enumeration contract) — this panel shows that
+  //     uniform response as-is, never tries to infer whether the address
+  //     was a real account.
+  //   - Dev-inbox viewer (item 145, closes a gap flagged in an earlier
+  //     session): `GET /auth/dev-inbox` reads back the exact dev-inbox file
+  //     the default `UNIDB_EMAIL_TRANSPORT=log` writes, so the redemption
+  //     forms above can be filled from a real captured email instead of a
+  //     hand-copied token. Double-gated server-side: absent entirely (404)
+  //     when the transport is real SMTP, shows a real 403 when the caller
+  //     isn't a superuser. `DELETE /auth/dev-inbox` clears it in place.
   // Per CLAUDE.md, nothing here is fabricated: anything the engine doesn't
   // support is an explicit "not available" state, never a dead-looking form.
   //
@@ -59,11 +77,11 @@
   let usersSupported = $state(true);
   let sessions = $state([]);   // [{sessionId, username, createdAt, expiresAt, revoked}]
   let sessionsSupported = $state(true);
-  let oauthProviders = $state({ google: false, github: false });
+  let oauthProviders = $state({});
 
   const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-  $effect(() => { load(); checkOauthCallback(); });
+  $effect(() => { load(); checkOauthCallback(); loadDevInbox(); });
 
   async function load() {
     loading = true;
@@ -426,10 +444,161 @@
     }
   }
 
-  // No remaining "not available" gaps for G1 as of PR #230 — password
-  // reset, session listing/revoke, MFA enroll/verify/disable, and OAuth
-  // sign-in are all live below (OAuth buttons are feature-detected per
-  // provider and simply absent when unconfigured).
+  // ── email auth flows — recovery + magic link (item 138) ──────────────────
+  // `email` is looked up directly as a username today (no users.email
+  // column yet — see README's "Contract notes"). Both request-step routes
+  // (recover/magiclink) always return {ok:true}, so `recoverSent`/
+  // `magiclinkSent` just reflect "the request was accepted", never "the
+  // account exists" — that distinction is the whole point of the
+  // no-enumeration contract, and the UI copy says so.
+  let recoverEmail = $state('');
+  let recoverBusy  = $state(false);
+  let recoverError = $state(null);
+  let recoverSent  = $state(false);
+
+  async function doRecover() {
+    recoverError = null;
+    recoverSent = false;
+    if (!recoverEmail.trim()) { recoverError = 'Enter an email/username.'; return; }
+    recoverBusy = true;
+    try {
+      await authRecover(recoverEmail.trim());
+      recoverSent = true;
+    } catch (e) {
+      recoverError = e.message ?? String(e);
+    } finally {
+      recoverBusy = false;
+    }
+  }
+
+  let recoverToken    = $state('');
+  let recoverNewPass  = $state('');
+  let recoverVerifyBusy  = $state(false);
+  let recoverVerifyError = $state(null);
+  let recoverVerifyDone  = $state(false);
+
+  async function doRecoverVerify() {
+    recoverVerifyError = null;
+    recoverVerifyDone = false;
+    if (!recoverToken.trim() || !recoverNewPass) { recoverVerifyError = 'Enter both the token and a new password.'; return; }
+    recoverVerifyBusy = true;
+    try {
+      await authVerifyRecovery(recoverToken.trim(), recoverNewPass);
+      recoverVerifyDone = true;
+      recoverToken = '';
+      recoverNewPass = '';
+    } catch (e) {
+      recoverVerifyError = e.message ?? String(e);
+    } finally {
+      recoverVerifyBusy = false;
+    }
+  }
+
+  let magicEmail = $state('');
+  let magicBusy  = $state(false);
+  let magicError = $state(null);
+  let magicSent  = $state(false);
+
+  async function doMagicLink() {
+    magicError = null;
+    magicSent = false;
+    if (!magicEmail.trim()) { magicError = 'Enter an email/username.'; return; }
+    magicBusy = true;
+    try {
+      await authMagicLink(magicEmail.trim());
+      magicSent = true;
+    } catch (e) {
+      magicError = e.message ?? String(e);
+    } finally {
+      magicBusy = false;
+    }
+  }
+
+  let magicToken = $state('');
+  let magicVerifyBusy  = $state(false);
+  let magicVerifyError = $state(null);
+
+  async function doMagicVerify() {
+    magicVerifyError = null;
+    if (!magicToken.trim()) { magicVerifyError = 'Enter the token from the magic-link email.'; return; }
+    magicVerifyBusy = true;
+    try {
+      applyFlowResult(await authMagicLinkVerify(magicToken.trim()));
+      magicToken = '';
+    } catch (e) {
+      magicVerifyError = e.message ?? String(e);
+    } finally {
+      magicVerifyBusy = false;
+    }
+  }
+
+  // ── Dev-inbox viewer (item 145) ───────────────────────────────────────────
+  // Closes the item-138 gap noted above: GET/DELETE /auth/dev-inbox reads
+  // back the exact file the `log` transport writes. Double-gated
+  // server-side (404 when transport is smtp, checked before 403-not-
+  // superuser) — `devInboxSupported === false` means "genuinely not
+  // applicable here" (real SMTP transport), while `devInboxError` means a
+  // real error reached us (most likely 403 PERMISSION_DENIED for a
+  // non-superuser token) and is shown as-is rather than silently hidden.
+  let devInboxSupported = $state(null); // null = not checked yet
+  let devInboxEntries   = $state([]);
+  let devInboxBusy      = $state(false);
+  let devInboxError     = $state(null);
+
+  async function loadDevInbox() {
+    devInboxBusy = true;
+    devInboxError = null;
+    try {
+      const out = await getDevInbox({ limit: 50 });
+      devInboxSupported = out.supported;
+      devInboxEntries = out.emails;
+    } catch (e) {
+      devInboxSupported = null;
+      devInboxError = e.message ?? String(e);
+    } finally {
+      devInboxBusy = false;
+    }
+  }
+
+  async function doClearDevInbox() {
+    devInboxBusy = true;
+    devInboxError = null;
+    try {
+      await clearDevInbox();
+      devInboxEntries = [];
+    } catch (e) {
+      devInboxError = e.message ?? String(e);
+    } finally {
+      devInboxBusy = false;
+    }
+  }
+
+  // Both templates' {{link}} embed the real, single-use token as a query
+  // param — extracted from the engine's own rendered text_body, never
+  // fabricated. Kind is inferred from which of the two verify paths the
+  // link points at, so "Use this token" fills the matching field below.
+  function devInboxToken(entry) {
+    return entry.text_body?.match(/token=([0-9a-fA-F]+)/)?.[1] ?? null;
+  }
+  function devInboxKind(entry) {
+    if (entry.text_body?.includes('/auth/magiclink/verify')) return 'magiclink';
+    if (entry.text_body?.includes('/auth/verify')) return 'recovery';
+    return null;
+  }
+  function useDevInboxToken(entry) {
+    const token = devInboxToken(entry);
+    if (!token) return;
+    if (devInboxKind(entry) === 'magiclink') magicToken = token;
+    else recoverToken = token;
+  }
+
+  // No remaining "not available" gaps for G1 as of unidb main through PR
+  // #248 — reset, session listing/revoke, MFA enroll/verify/disable, OAuth
+  // sign-in (all seven presets), password-recovery/magic-link, and the
+  // dev-inbox viewer are all live below. OAuth buttons are feature-detected
+  // per provider and simply absent when unconfigured; the dev-inbox card is
+  // absent when the transport is real SMTP (404, item 145's first gate) and
+  // shows its real error when the caller isn't a superuser (403).
 </script>
 
 <div class="auth">
@@ -652,16 +821,15 @@
               {#if mfaLoginError}<p class="err small">{mfaLoginError}</p>{/if}
             </div>
           {/if}
-          {#if oauthProviders.google || oauthProviders.github}
+          {#if Object.values(oauthProviders).some(Boolean)}
             <div class="oauth-row">
               <span class="flabel">Or sign in with</span>
               <div class="oauth-btns">
-                {#if oauthProviders.google}
-                  <button class="ghost oauth-btn" onclick={() => startOauth('google')}>Google</button>
-                {/if}
-                {#if oauthProviders.github}
-                  <button class="ghost oauth-btn" onclick={() => startOauth('github')}>GitHub</button>
-                {/if}
+                {#each Object.entries(OAUTH_PROVIDER_LABELS) as [provider, label]}
+                  {#if oauthProviders[provider]}
+                    <button class="ghost oauth-btn" onclick={() => startOauth(provider)}>{label}</button>
+                  {/if}
+                {/each}
               </div>
               <p class="muted small">
                 Real browser redirect to <code>GET /auth/oauth/&lt;provider&gt;/authorize</code> —
@@ -714,6 +882,128 @@
             </div>
           </div>
         </div>
+      {/if}
+    </section>
+
+    <section class="card">
+      <h3>Email auth flows</h3>
+      <p class="muted small">
+        Password-recovery and magic-link (passwordless) sign-in, over the real
+        <code>POST /auth/{'{recover,verify,magiclink,magiclink/verify}'}</code> routes. Both
+        request-step calls below always report success — a registered vs. unregistered
+        email/username is indistinguishable by design (no account enumeration).
+      </p>
+
+      <div class="flow-grid">
+        <div class="flow-form">
+          <span class="flabel-section">Password recovery</span>
+          <label class="field">
+            <span class="flabel">Email / username</span>
+            <input bind:value={recoverEmail} placeholder="alice" spellcheck="false" />
+          </label>
+          <div class="flow-btns">
+            <button onclick={doRecover} disabled={recoverBusy || !recoverEmail}>
+              {recoverBusy ? 'Sending…' : 'Send recovery email'}
+            </button>
+          </div>
+          {#if recoverSent}<p class="ok-note">Request accepted (200) — if that account exists, an email was sent.</p>{/if}
+          {#if recoverError}<p class="err small">{recoverError}</p>{/if}
+
+          <label class="field email-redeem">
+            <span class="flabel">Recovery token (from the email/dev-inbox)</span>
+            <input bind:value={recoverToken} placeholder="opaque hex token" spellcheck="false" class="mono-input" />
+          </label>
+          <label class="field">
+            <span class="flabel">New password</span>
+            <input type="password" bind:value={recoverNewPass} />
+          </label>
+          <div class="flow-btns">
+            <button class="ghost" onclick={doRecoverVerify} disabled={recoverVerifyBusy || !recoverToken || !recoverNewPass}>
+              {recoverVerifyBusy ? 'Resetting…' : 'Redeem token'}
+            </button>
+          </div>
+          {#if recoverVerifyDone}<p class="ok-note">Password reset. Every existing session for that user is now revoked.</p>{/if}
+          {#if recoverVerifyError}<p class="err small">{recoverVerifyError}</p>{/if}
+        </div>
+
+        <div class="flow-form">
+          <span class="flabel-section">Magic link</span>
+          <label class="field">
+            <span class="flabel">Email / username</span>
+            <input bind:value={magicEmail} placeholder="alice" spellcheck="false" />
+          </label>
+          <div class="flow-btns">
+            <button onclick={doMagicLink} disabled={magicBusy || !magicEmail}>
+              {magicBusy ? 'Sending…' : 'Send magic link'}
+            </button>
+          </div>
+          {#if magicSent}<p class="ok-note">Request accepted (200) — if that account exists, an email was sent.</p>{/if}
+          {#if magicError}<p class="err small">{magicError}</p>{/if}
+
+          <label class="field email-redeem">
+            <span class="flabel">Magic-link token (from the email/dev-inbox)</span>
+            <input bind:value={magicToken} placeholder="opaque hex token" spellcheck="false" class="mono-input" />
+          </label>
+          <div class="flow-btns">
+            <button class="ghost" onclick={doMagicVerify} disabled={magicVerifyBusy || !magicToken}>
+              {magicVerifyBusy ? 'Redeeming…' : 'Redeem token → sign in'}
+            </button>
+          </div>
+          {#if magicVerifyError}<p class="err small">{magicVerifyError}</p>{/if}
+          <p class="muted small">A redeemed token's session appears in the token panel above.</p>
+        </div>
+      </div>
+
+      {#if devInboxBusy && devInboxSupported === null && !devInboxError}
+        <p class="muted small">Checking dev-inbox availability…</p>
+      {:else if devInboxSupported}
+        <div class="dev-inbox">
+          <div class="dev-inbox-head">
+            <span class="flabel-section">Dev inbox (item 145)</span>
+            <div class="flow-btns">
+              <button class="ghost" onclick={loadDevInbox} disabled={devInboxBusy}>
+                {devInboxBusy ? 'Loading…' : 'Refresh'}
+              </button>
+              <button class="ghost" onclick={doClearDevInbox} disabled={devInboxBusy || !devInboxEntries.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          <p class="muted small">
+            <code>GET /auth/dev-inbox</code> reads the same file the default
+            <code>UNIDB_EMAIL_TRANSPORT=log</code> writes — real captured recovery/magic-link
+            emails, newest first. Superuser-only; absent entirely on a real-SMTP deployment.
+          </p>
+          {#if devInboxEntries.length === 0}
+            <p class="muted small">No captured emails yet — send a recovery or magic-link request above.</p>
+          {:else}
+            <ul class="dev-inbox-list">
+              {#each devInboxEntries as entry}
+                <li>
+                  <div class="dev-inbox-row">
+                    <span class="dev-inbox-to">{entry.to}</span>
+                    <span class="dev-inbox-subject">{entry.subject}</span>
+                    <span class="muted small">{new Date(entry.ts * 1000).toLocaleString()}</span>
+                  </div>
+                  {#if devInboxToken(entry)}
+                    <button class="ghost small" onclick={() => useDevInboxToken(entry)}>
+                      Use this {devInboxKind(entry) === 'magiclink' ? 'magic-link' : 'recovery'} token →
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {:else if devInboxError}
+        <p class="gap-note"><strong>Dev inbox:</strong> {devInboxError}</p>
+      {:else}
+        <p class="gap-note">
+          Dev inbox not available — this server's <code>UNIDB_EMAIL_TRANSPORT</code> is
+          <code>smtp</code> (real delivery), so <code>GET /auth/dev-inbox</code> is a
+          <code>404</code> by design (item 145's first gate). Paste a token above from wherever
+          the real email actually landed.
+        </p>
       {/if}
     </section>
 
@@ -950,6 +1240,25 @@
   .flow-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
   @media (max-width: 640px) { .flow-grid { grid-template-columns: 1fr; } }
   .flow-form { display: flex; flex-direction: column; gap: 8px; }
+  .flabel-section { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .email-redeem { margin-top: 8px; }
+  .gap-note {
+    margin: 10px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5;
+    background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .gap-note code { font-family: var(--mono); background: var(--panel); border-radius: 3px; padding: 0 3px; }
+  .dev-inbox { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .dev-inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .dev-inbox-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .dev-inbox-list li {
+    background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .dev-inbox-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .dev-inbox-to { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+  .dev-inbox-subject { font-size: 12px; color: var(--text); }
+  button.small { font-size: 11px; padding: 3px 8px; align-self: flex-start; }
   .flow-btns { display: flex; gap: 8px; }
   .flow-btns button:not(.ghost) {
     background: var(--accent); color: #fff; border: none;

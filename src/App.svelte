@@ -18,11 +18,14 @@
   import AuthPanel from './lib/AuthPanel.svelte';
   import ApiDocsPanel from './lib/ApiDocsPanel.svelte';
   import GraphqlPanel from './lib/GraphqlPanel.svelte';
+  import UserAdminPanel from './lib/UserAdminPanel.svelte';
+  import WebhooksPanel from './lib/WebhooksPanel.svelte';
+  import RealtimeAuthzPanel from './lib/RealtimeAuthzPanel.svelte';
   import { runSql } from './lib/api.js';
   import { quoteIdent } from './lib/format.js';
 
-  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth' | 'apidocs' | 'graphql'
-  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth','apidocs','graphql']);
+  // 'sql' | 'records' | 'schema' | 'csv' | 'storage' | 'events' | 'observability' | 'logs' | 'compare' | 'roles' | 'policies' | 'auth' | 'apidocs' | 'graphql' | 'useradmin' | 'webhooks' | 'realtimeauthz'
+  const VALID_TABS = new Set(['sql','records','schema','csv','storage','events','observability','logs','compare','roles','policies','auth','apidocs','graphql','useradmin','webhooks','realtimeauthz']);
   const _urlTab = new URLSearchParams(window.location.search).get('tab') ?? '';
   let tab = $state(VALID_TABS.has(_urlTab) ? _urlTab : 'sql');
   let selectedTable = $state(null);
@@ -244,6 +247,27 @@
         </svg>
         GraphQL
       </button>
+      <button class:active={tab === 'useradmin'} onclick={() => (tab = 'useradmin')} title="User Management">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="8" cy="6.5" r="3"/>
+          <path d="M2.5 17c1-4 3.5-5.5 5.5-5.5s4.5 1.5 5.5 5.5"/>
+          <path d="M14 8c1.2 0 2.2-1 2.2-2.2S15.2 3.6 14 3.6"/>
+          <path d="M15.5 11.2c1.6.5 2.5 1.8 3 3.8"/>
+        </svg>
+        Users
+      </button>
+      <button class:active={tab === 'webhooks'} onclick={() => (tab = 'webhooks')} title="Webhooks">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="6" cy="6" r="2.5"/><circle cx="15" cy="15" r="2.5"/><path d="M8 8l5.5 5.5"/>
+        </svg>
+        Webhooks
+      </button>
+      <button class:active={tab === 'realtimeauthz'} onclick={() => (tab = 'realtimeauthz')} title="Realtime Authz">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M10 2v6M10 12v6M3.2 6.2l4.6 2.6M12.2 11.2l4.6 2.6M16.8 6.2l-4.6 2.6M7.8 11.2l-4.6 2.6"/>
+        </svg>
+        Channel Authz
+      </button>
     </div>
 
     <div class="nav-bottom">
@@ -282,7 +306,7 @@
           <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
         </div>
       {/if}
-      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies' || tab === 'apidocs' || tab === 'graphql'}>
+      <section class="panel" class:no-pad={tab === 'storage' || tab === 'roles' || tab === 'policies' || tab === 'apidocs' || tab === 'graphql' || tab === 'useradmin' || tab === 'webhooks' || tab === 'realtimeauthz'}>
         {#if tab === 'sql'}
           <SqlEditor bind:sql bind:paramsText />
         {:else if tab === 'records'}
@@ -323,6 +347,12 @@
           <ApiDocsPanel {relationships} />
         {:else if tab === 'graphql'}
           <GraphqlPanel />
+        {:else if tab === 'useradmin'}
+          <UserAdminPanel />
+        {:else if tab === 'webhooks'}
+          <WebhooksPanel {tables} />
+        {:else if tab === 'realtimeauthz'}
+          <RealtimeAuthzPanel />
         {/if}
       </section>
     </main>

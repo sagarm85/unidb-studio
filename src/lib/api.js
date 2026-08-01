@@ -345,20 +345,14 @@ export async function getRestOpenApi() {
   return { supported: true, doc: await res.json() };
 }
 
-/**
- * GET /rest/v1/<table>?select=...&<filters>&order=...&limit=...&offset=...
- * `filterParams` is an array of `[column, "<op>.<value>"]` pairs — already
- * formatted by the caller (the op/value encoding is filter-shape-specific,
- * e.g. `in` wraps its value in parens, `is` takes a bare null/true/false —
- * kept in the component next to the filter-builder UI, mirroring how
- * RolesPanel/PoliciesPanel build their own SQL text next to their forms).
- *
- * @param {string} table
- * @param {{select?:string, filterParams?:Array<[string,string]>, order?:string, limit?:number, offset?:number}} [opts]
- * @returns {Promise<{result:object, url:string}>} `result` is the raw
- *   `{type:'rows', columns, rows}` body — pass straight to ResultsGrid.
- */
-export async function restGet(table, opts = {}) {
+// ── /rest/v1 with full Prefer control (item 139) + embed filter/order/limit/
+// offset (item 136) ───────────────────────────────────────────────────────
+// GET/POST/PATCH/DELETE /rest/v1/<table>, the Prefer header (`count=exact`
+// on GET; `return=representation|minimal` on a mutation), extra raw query
+// params (item 136's dotted `<embed>.<col>=<op>.<val>` / `<embed>.order=` /
+// `<embed>.limit=` / `<embed>.offset=` params, which don't fit a fixed opts
+// shape), and a JSON request body for POST/PATCH.
+export async function restRequest(table, method, opts = {}) {
   if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
   const qs = new URLSearchParams();
   if (opts.select) qs.set('select', opts.select);
@@ -366,19 +360,50 @@ export async function restGet(table, opts = {}) {
   if (opts.order) qs.set('order', opts.order);
   if (opts.limit != null) qs.set('limit', String(opts.limit));
   if (opts.offset != null) qs.set('offset', String(opts.offset));
+  // Item 136: dotted per-embed filter/order/limit/offset params — arbitrary
+  // keys the fixed opts above don't model, so the caller (the embed-builder
+  // UI) hands them over pre-formatted as [key, value] pairs.
+  for (const [key, value] of opts.extraParams ?? []) qs.append(key, value);
   const query = qs.toString();
   const url = `${BASE_URL}/rest/v1/${encodeURIComponent(table)}${query ? `?${query}` : ''}`;
+
+  const headers = authHeaders();
+  // Item 139: Prefer is a comma-joined list of recognized preferences; the
+  // server ignores anything it doesn't recognize rather than erroring, so
+  // this never needs to feature-detect before sending it.
+  const preferParts = [];
+  if (opts.countExact) preferParts.push('count=exact');
+  if (opts.return) preferParts.push(`return=${opts.return}`);
+  if (preferParts.length) headers['Prefer'] = preferParts.join(', ');
+  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
 
   const start = performance.now();
   let res;
   try {
-    res = await fetch(url, { headers: authHeaders() });
+    res = await fetch(url, {
+      method,
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
   } catch (err) {
     throw transportError(err);
   }
   const roundTripMs = performance.now() - start;
   if (!res.ok) throw await toApiError(res);
-  return { result: await res.json(), url, roundTripMs };
+
+  // `return=minimal` (POST 201 / PATCH+DELETE 204) and a plain DELETE with
+  // no Prefer at all can both have an empty body — read as text first so
+  // JSON.parse is only attempted when there's actually something to parse.
+  const text = await res.text();
+  const result = text ? JSON.parse(text) : null;
+  return {
+    result,
+    url,
+    roundTripMs,
+    status: res.status,
+    contentRange: res.headers.get('Content-Range'),
+    preferenceApplied: res.headers.get('Preference-Applied'),
+  };
 }
 
 // ---- authorization: roles, users, grants (item 24 + item 122 B3) --------
@@ -834,22 +859,38 @@ export async function mfaDisable(code) {
 
 // ---- OAuth 2.0 social login (item 128, Workstream D1; PR #230) -----------
 // `GET /auth/oauth/{provider}/authorize` is a real browser redirect (302 to
-// the provider) — clicking "Sign in with Google/GitHub" navigates the whole
+// the provider) — clicking "Sign in with <Provider>" navigates the whole
 // tab there directly, it is never fetched. The only thing this module does
-// is *feature-detect* which of the two known provider names
-// (`google`/`github`) are actually configured, so the panel can hide a
-// button that would otherwise 404. Per REST_API.md: an unconfigured
-// provider's authorize/callback routes both return a plain `404`,
-// indistinguishable from a non-existent route — there is no `GET /auth/meta`
-// field listing configured providers. Detection technique: fetch the
-// authorize URL with `redirect: 'manual'` so the browser does NOT follow a
-// real redirect (no navigation, no request ever reaches Google/GitHub) —
-// a configured provider yields an opaque redirect response (immediately
-// discarded), an unconfigured one yields a normal, readable 404. Both
-// authorize/callback are explicitly NOT rate-limited (REST_API.md), so
-// probing both provider names on every panel load is safe.
+// is *feature-detect* which of the seven known preset provider names
+// (`google`/`github`/`apple`/`azure`/`gitlab`/`discord`/`facebook` — the
+// last five added by item 143, part 2) are actually configured, so the
+// panel can hide a button that would otherwise 404. Per REST_API.md: an
+// unconfigured provider's authorize/callback routes both return a plain
+// `404`, indistinguishable from a non-existent route — there is no
+// `GET /auth/meta` field listing configured providers. Detection technique:
+// fetch the authorize URL with `redirect: 'manual'` so the browser does NOT
+// follow a real redirect (no navigation, no request ever reaches the
+// provider) — a configured provider yields an opaque redirect response
+// (immediately discarded), an unconfigured one yields a normal, readable
+// 404. Both authorize/callback are explicitly NOT rate-limited
+// (REST_API.md), so probing all seven provider names on every panel load
+// is safe. Any *other* provider name an operator configures via the
+// `_AUTHORIZE_URL`/etc. env overrides works too (REST_API.md), but has no
+// preset display name — out of scope for this fixed button row.
 
-const OAUTH_PROVIDERS = ['google', 'github'];
+const OAUTH_PROVIDERS = ['google', 'github', 'apple', 'azure', 'gitlab', 'discord', 'facebook'];
+
+// Display labels for the seven presets — cosmetic only, matches REST_API.md's
+// preset table naming ("Microsoft / Azure AD" shortened to fit a button).
+export const OAUTH_PROVIDER_LABELS = {
+  google: 'Google',
+  github: 'GitHub',
+  apple: 'Apple',
+  azure: 'Microsoft',
+  gitlab: 'GitLab',
+  discord: 'Discord',
+  facebook: 'Facebook',
+};
 
 export function oauthAuthorizeUrl(provider) {
   return `${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/authorize`;
@@ -870,9 +911,10 @@ async function oauthProviderConfigured(provider) {
 
 /**
  * Feature-detects which OAuth providers are configured on this server (see
- * above for the technique). Returns `{google: bool, github: bool}`. Never
- * throws — an unreachable server just reports every provider as
- * unconfigured, matching the panel's existing "degrade gracefully" pattern.
+ * above for the technique). Returns one bool per `OAUTH_PROVIDERS` entry,
+ * e.g. `{google: bool, github: bool, apple: bool, ...}`. Never throws — an
+ * unreachable server just reports every provider as unconfigured, matching
+ * the panel's existing "degrade gracefully" pattern.
  */
 export async function getOauthProviders() {
   if (!IS_CONFIGURED) return Object.fromEntries(OAUTH_PROVIDERS.map((p) => [p, false]));
@@ -1371,6 +1413,7 @@ const INTROSPECTION_QUERY = `
   query StudioIntrospection {
     __schema {
       queryType { name }
+      mutationType { name }
       types {
         kind
         name
@@ -1402,4 +1445,307 @@ export async function getGraphqlSchema() {
     return { supported: false, schema: null, errors: out.errors ?? null };
   }
   return { supported: true, schema: out.data.__schema };
+}
+// ---- auth admin API — user management (item 142, PR #245) -----------------
+// Supabase-parity `auth.admin`: superuser-only /auth/admin/users/* for
+// listing, inspecting, creating, updating, and deleting users, plus two
+// new pieces of per-user state — `banned` and split `app_metadata`/
+// `user_metadata` — without hand-rolling CREATE/DROP/ALTER USER SQL. Every
+// route is superuser-gated server-side (403 PERMISSION_DENIED otherwise);
+// a GET response NEVER includes a password hash, refresh token, or session
+// detail (verified against REST_API.md's "Auth admin API" section) — this
+// module doesn't add any client-side redaction because the server never
+// sends the sensitive value in the first place.
+
+/**
+ * GET /auth/admin/users?limit=&offset= — paginated user list. `total` is
+ * always the full unpaginated count (mirrors item 139's Content-Range
+ * posture), never just the returned page length.
+ */
+export async function adminListUsers({ limit = 50, offset = 0 } = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, users: [], total: 0 };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, users: j.users ?? [], total: j.total ?? 0 };
+}
+
+/** GET /auth/admin/users/{id} — {id} is the username (unidb has no separate user-id column). */
+export async function adminGetUser(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * POST /auth/admin/users — create a user. Only `username` is required;
+ * `password` is optional (a passwordless account can still be reached via
+ * OAuth/magic-link later).
+ */
+export async function adminCreateUser(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * PATCH /auth/admin/users/{id} — partial update; only supplied fields
+ * change. `banned: true` revokes every session for that user server-side;
+ * `superuser: false` demoting the last remaining superuser is rejected
+ * (403 PERMISSION_DENIED), same lockout guard as adminDeleteUser below.
+ */
+export async function adminUpdateUser(username, payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PATCH',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/**
+ * DELETE /auth/admin/users/{id} — reuses DROP USER's exact cleanup
+ * (memberships, grants, credentials, MFA, OAuth links, ban/metadata state).
+ * Dropping the last remaining superuser is rejected (403 PERMISSION_DENIED,
+ * not a silent no-op); an unknown username is 404, never a silent 204.
+ */
+export async function adminDeleteUser(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- database webhooks (item 141, PR #244) --------------------------------
+// Superuser-only outbound-HTTP-on-row-change registration. GET /webhooks
+// always redacts the signing secret (`has_signing_secret: bool`, never the
+// value) — this module never fabricates or attempts to display one.
+
+/** GET /webhooks — list every registered webhook (secrets redacted server-side). */
+export async function listWebhooks() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, webhooks: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, webhooks: await res.json() };
+}
+
+/**
+ * POST /webhooks — create or upsert (by `id`) a webhook. `events` must be a
+ * non-empty subset of insert/update/delete; `signing_secret` is optional
+ * and write-only (never read back).
+ */
+export async function upsertWebhook(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** DELETE /webhooks/{id} — idempotent; deleting an unknown id is a no-op. */
+export async function deleteWebhook(id) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- realtime channel authorization policies (item 140, PR #243) ---------
+// Superuser-only allow/deny layer in front of the four broadcast/presence
+// routes: (topic_pattern, operation, allowed_roles). Mirrors the RLS
+// PoliciesPanel's shape/conventions on the Studio side.
+
+/** GET /realtime/policies — list every stored channel policy. */
+export async function listChannelPolicies() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, policies: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, policies: await res.json() };
+}
+
+/**
+ * PUT /realtime/policies — upsert a (topic_pattern, operation) policy,
+ * replacing its role set. `operation` is one of publish|subscribe|
+ * presence|all (case-insensitive on the wire).
+ */
+export async function putChannelPolicy(topicPattern, operation, roles) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic_pattern: topicPattern, operation, roles }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** DELETE /realtime/policies — idempotent; removing an unknown pair is a no-op. */
+export async function deleteChannelPolicy(topicPattern, operation) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, {
+      method: 'DELETE',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic_pattern: topicPattern, operation }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- email auth flows — recovery + magic link (item 138, PR #241) --------
+// POST /auth/recover and POST /auth/magiclink always return 200 regardless
+// of whether `email` is a known account (no-account-enumeration contract) —
+// this module surfaces that response as-is rather than trying to infer
+// account existence from it. `email` is looked up directly as a username
+// today (no users.email column yet — see this module's README contract
+// note). Redemption (verify/magiclink-verify) tokens are single-use and
+// short-lived server-side.
+
+async function authOkPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json(); // { ok: true }
+}
+
+/** POST /auth/recover — request a password-reset email. Always 200. */
+export async function authRecover(email) {
+  return authOkPost('/auth/recover', { email });
+}
+
+/** POST /auth/verify — redeem a recovery token for a new password; revokes every existing session. */
+export async function authVerifyRecovery(token, newPassword) {
+  return authOkPost('/auth/verify', { token, new_password: newPassword });
+}
+
+/** POST /auth/magiclink — request a magic sign-in link email. Always 200. */
+export async function authMagicLink(email) {
+  return authOkPost('/auth/magiclink', { email });
+}
+
+/** POST /auth/magiclink/verify — redeem a magic-link token for a real session. */
+export async function authMagicLinkVerify(token) {
+  return toSession(await authFlowPost('/auth/magiclink/verify', { token }));
+}
+
+// ---- dev-inbox read route (item 145) --------------------------------------
+// Studio's Inbucket/Mailpit-equivalent: reads/clears the exact dev-inbox
+// JSONL the `log` email transport writes, so the recovery/magic-link token
+// pasted into the redemption form above (see AuthPanel's header comment)
+// doesn't have to come from a filesystem `tail`. Double-gated server-side
+// (REST_API.md item 145): `404` when the active transport is real SMTP
+// (checked first, so a production deployment never leaks that this admin
+// surface exists at all), then `403 PERMISSION_DENIED` for a non-superuser.
+// This module surfaces both distinctly — `supported:false` for the 404 (a
+// real "not applicable here" state, same posture as every other
+// feature-detected route), while a 403 is re-thrown so the caller can show
+// the real permission error rather than silently hiding a superuser-only
+// feature.
+
+/** GET /auth/dev-inbox?limit= — newest-first captured emails (dev transport + superuser only). */
+export async function getDevInbox({ limit = 50 } = {}) {
+  if (!IS_CONFIGURED) return { supported: false, emails: [] };
+  const qs = new URLSearchParams({ limit: String(limit) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/dev-inbox?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, emails: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, emails: await res.json() };
+}
+
+/** DELETE /auth/dev-inbox — truncate the dev inbox in place. */
+export async function clearDevInbox() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/dev-inbox`, { method: 'DELETE', headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true };
 }
