@@ -1590,3 +1590,58 @@ export async function deleteWebhook(id) {
   if (!res.ok) throw await toApiError(res);
 }
 
+// ---- realtime channel authorization policies (item 140, PR #243) ---------
+// Superuser-only allow/deny layer in front of the four broadcast/presence
+// routes: (topic_pattern, operation, allowed_roles). Mirrors the RLS
+// PoliciesPanel's shape/conventions on the Studio side.
+
+/** GET /realtime/policies — list every stored channel policy. */
+export async function listChannelPolicies() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, policies: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, policies: await res.json() };
+}
+
+/**
+ * PUT /realtime/policies — upsert a (topic_pattern, operation) policy,
+ * replacing its role set. `operation` is one of publish|subscribe|
+ * presence|all (case-insensitive on the wire).
+ */
+export async function putChannelPolicy(topicPattern, operation, roles) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic_pattern: topicPattern, operation, roles }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** DELETE /realtime/policies — idempotent; removing an unknown pair is a no-op. */
+export async function deleteChannelPolicy(topicPattern, operation) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, {
+      method: 'DELETE',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic_pattern: topicPattern, operation }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
