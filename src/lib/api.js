@@ -1536,3 +1536,57 @@ export async function adminDeleteUser(username) {
   if (!res.ok) throw await toApiError(res);
 }
 
+// ---- database webhooks (item 141, PR #244) --------------------------------
+// Superuser-only outbound-HTTP-on-row-change registration. GET /webhooks
+// always redacts the signing secret (`has_signing_secret: bool`, never the
+// value) — this module never fabricates or attempts to display one.
+
+/** GET /webhooks — list every registered webhook (secrets redacted server-side). */
+export async function listWebhooks() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, webhooks: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, webhooks: await res.json() };
+}
+
+/**
+ * POST /webhooks — create or upsert (by `id`) a webhook. `events` must be a
+ * non-empty subset of insert/update/delete; `signing_secret` is optional
+ * and write-only (never read back).
+ */
+export async function upsertWebhook(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** DELETE /webhooks/{id} — idempotent; deleting an unknown id is a no-op. */
+export async function deleteWebhook(id) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
