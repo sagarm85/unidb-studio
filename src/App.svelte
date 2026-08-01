@@ -320,7 +320,7 @@
         {:else if tab === 'auth'}
           <AuthPanel />
         {:else if tab === 'apidocs'}
-          <ApiDocsPanel />
+          <ApiDocsPanel {relationships} />
         {:else if tab === 'graphql'}
           <GraphqlPanel />
         {/if}
