@@ -2,47 +2,83 @@
 
 A standalone, dependency-light web UI that demonstrates the [unidb](../unidb)
 database engine over its documented HTTP API. It is a **pure static SPA**
-(Vite + Svelte) — no backend of its own. Every action is a `fetch` against a
-reachable `unidb-server`.
+(Vite + React 19 + TypeScript + Tailwind v4 + shadcn/ui) — no backend of its
+own. Every action is a `fetch` against a reachable `unidb-server`.
 
 It builds strictly against the engine's REST contract
 ([`../unidb/docs/REST_API.md`](../unidb/docs/REST_API.md)); it never touches the
 engine source.
 
+This is the v2 rewrite of the original Svelte 5 Studio — same wire contract
+(`src/lib/engine/api.js` is the one module that knows it), same
+engine-truthful principle (`CLAUDE.md`: never fabricate a value the engine
+doesn't actually return), rebuilt on React/TypeScript/shadcn.
+
 ## What it does
 
-Five panels, all over `POST /sql` and `GET /tables`:
+A left-nav SPA over four groups of tabs, all wired to real engine data —
+`GET /tables`, `POST /sql`, and every route documented in
+[`../unidb/docs/REST_API.md`](../unidb/docs/REST_API.md):
 
-1. **SQL editor** — a textarea + **Run** → `POST /sql`. Renders a results grid
-   (rows), an affected-count (`inserted`/`updated`/`deleted`/`truncated`), or a
-   DDL status. Failures surface the engine's `{ error, code }` verbatim.
-2. **Tables sidebar** — `GET /tables` on load → a clickable list of `name` +
-   column summary. One server = one database, presented as *database → tables*.
-   Internal tables (`__events__`, …) are hidden. If the server doesn't have the
-   `/tables` route yet, the sidebar degrades gracefully instead of erroring.
-3. **Record browser** — click a table → `SELECT * FROM <t> ORDER BY <key>
-   LIMIT 50`. **Next** does **keyset paging** (`WHERE <key> > $1 ORDER BY <key>
-   LIMIT 50`, tracking the last key), preferring an indexed or `id` column. With
-   no obvious key it **falls back to `LIMIT`/`OFFSET`**.
-4. **Join / filter + timing** — the same editor shows **two clearly separated
-   timings** and never conflates them:
-   - `round-trip: X ms` — client wall time (`performance.now()` around the fetch).
-   - `server exec: Y ms` — true engine execution time, from a **companion
-     `EXPLAIN ANALYZE <query>` call** (SELECT/CTE queries only).
-5. **CSV import + timing** — pick a `.csv` (row 1 = headers), choose a target
-   table → rows are inserted **batched into one transaction per request**
-   (many `;`-separated `INSERT`s in a single `POST /sql` body, per the contract's
-   only multi-statement-atomicity mechanism). Reports total wall-clock and
-   rows/sec.
+**Project Overview** — stat cards + a live metrics chart sourced from
+`GET /stats`/`GET /stats/history`, quick links into the other tabs.
 
-## Authorization panels (Roles, Policies, Authentication, API Docs, GraphQL, Users, Webhooks, Channel Authz)
+**Database:**
+1. **Table Editor** — browse/page/filter/sort a table's rows, inline cell
+   edit, row insert/delete, CSV export.
+2. **SQL Editor** — a query editor with saved/pinned queries, history,
+   session transactions, `EXPLAIN`/`EXPLAIN ANALYZE` with the same
+   round-trip-vs-server-exec timing split the original Studio had, and
+   single-`SELECT` results always paged through a server cursor rather than
+   fetching an unbounded result set.
+3. **Schema** — a drag/pan ERD sourced from real primary keys and foreign
+   keys (`information_schema` + `unidb_catalog`), plus a DDL view.
+4. **CSV Import** — batched per-row `INSERT`s (see the honesty caveat below).
 
-Eight more panels cover Supabase-parity auth/authorization/API surface,
-fully live against unidb main's merged auth + auto-REST + GraphQL + realtime
-+ webhooks contract (PR #222 through #245). See
-[`docs/AUTH_POLICY_PANELS_PLAN.md`](docs/AUTH_POLICY_PANELS_PLAN.md) for the
-full plan and per-panel verification notes. There are no remaining
-feature-detect stubs in any of these panels.
+**Platform:**
+- **Storage** — buckets/objects over `/storage/*`, reflecting per-object
+  authorization (item 120, F1) — see below.
+- **Events** — the WAL-derived change-event stream, live-tailing.
+- **Auth** — Roles / Grants / Policies / Preview / Whoami / **Sessions** /
+  **Sign-in flows**, described below.
+- **Users** — superuser user management over `/auth/admin/users`.
+- **Webhooks** — database webhook management over `/webhooks`.
+- **Channel Authz** — realtime channel authorization policies over
+  `/realtime/policies`.
+- **Broadcast & Presence** — a live SSE test client over
+  `/realtime/broadcast/*` and `/realtime/presence/*` (item 132): publish/
+  subscribe broadcast messages on a topic, track/watch presence with a live
+  join/leave/update map. Purely in-memory and ephemeral, per the engine
+  contract — a server restart drops all state.
+- **Scheduled Jobs** — a Supabase-parity `pg_cron` surface over
+  `/cron/jobs` (item 144): register `(name, schedule, sql, run_as?)`,
+  toggle/delete, see last-run status (no persisted run history — only
+  in-memory state, reset on server restart).
+
+**API:**
+- **API Docs** — a live schema + curl-snippet viewer generated from the
+  engine's own `GET /rest/v1` OpenAPI 3 document, plus a full **GET/POST/
+  PATCH/DELETE explorer** exercising the real `select=`/filter (`eq/neq/gt/
+  gte/lt/lte/like/ilike/in/is`)/`order=`/`limit`/`offset` query surface over
+  `/rest/v1/<table>`, item 136's per-embed filter/order/limit/offset params,
+  and item 139's `Prefer: count=exact` / `return=representation|minimal`
+  with the real `Content-Range`/`Preference-Applied` response headers shown.
+- **GraphQL** — a schema browser over a standard introspection query
+  against the engine's `POST /graphql` (schema-derived, read + write), a
+  callout surfacing unidb's two differentiators over a relational-only
+  Supabase/pg_graphql stack (`edges(type, direction)` graph traversal; root
+  `near_<table>(vector, k)` vector similarity), starter queries/mutations
+  built from the real schema, and a query editor that runs real
+  queries/mutations and renders the real `{data, errors}` envelope.
+
+**Monitor:** Observability, Logs, Compare (unidb vs Postgres benchmark
+viewer).
+
+### Auth tab
+
+The Auth tab's seven subtabs cover unidb's full per-user authorization and
+credentialed-auth surface, fully live — no fabricated data, no
+feature-detect stubs remaining anywhere in it:
 
 - **Roles** — users + roles list, transitive role-membership editor, a
   per-table GRANT/REVOKE checkbox matrix, and the three built-in roles
@@ -57,68 +93,30 @@ feature-detect stubs in any of these panels.
   existing policy now shows its actual `target_roles` (from
   `unidb_catalog.policies`) — a role-chip list when `TO`-scoped, or
   "(all roles)" for the unscoped `"*"` case.
-- **Authentication** — real `GET /auth/meta` / `GET /auth/whoami` (also
-  showing the JWKS discovery URL and signup status), a users list with
-  create-with-password/delete, a **live** reset-password control
-  (`ALTER USER <name> PASSWORD '…'`, superuser-gated), an **active
-  sessions** table (`unidb_catalog.sessions`: session id, user, created,
+- **Preview** — `POST /auth/preview`, a role-impersonation debugger: run any
+  query as a chosen user and see the RLS-filtered result.
+- **Whoami** — `GET /auth/whoami`: the caller's own identity/privileges.
+- **Sessions** — `unidb_catalog.sessions` (session id, user, created,
   expires, revoked status — never a token/hash) with per-session revoke
-  (`DELETE /auth/sessions/{id}`), a flow tester over the real
+  (`DELETE /auth/sessions/{id}`).
+- **Sign-in flows** — a credential flow tester over the real
   `POST /auth/{login,signup,refresh,logout}` routes (branching on the
-  `mfa_required` challenge shape when the account has MFA enabled), **TOTP
+  `mfa_required` challenge shape when the account has MFA enabled); **TOTP
   MFA** enroll/verify/disable (`POST /auth/mfa/{enroll,verify,disable}` +
   the login-time `POST /auth/mfa/challenge` redemption — the secret and
-  `otpauth://` URI are shown for manual entry; recovery codes shown once),
-  and **OAuth sign-in** buttons for all seven built-in preset providers
+  `otpauth://` URI are shown for manual entry; recovery codes shown once);
+  **OAuth sign-in** buttons for all seven built-in preset providers
   (Google/GitHub/Apple/Microsoft/GitLab/Discord/Facebook), each
   independently feature-detected and hidden when its provider isn't
-  configured server-side. Tokens shown in the flow tester are kept
-  in-memory only, never persisted or swapped into the Studio's own admin
-  session token. **Email auth flows** — password recovery
+  configured server-side; **email auth flows** — password recovery
   (`POST /auth/recover` → `POST /auth/verify`) and magic-link sign-in
   (`POST /auth/magiclink` → `POST /auth/magiclink/verify`), both request
   steps showing the real uniform `{ok:true}` no-enumeration response, plus
   a live **dev-inbox viewer** (`GET`/`DELETE /auth/dev-inbox`) that reads
   back real captured recovery/magic-link emails and fills the redemption
   token field for you — superuser-only, absent entirely on a real-SMTP
-  deployment.
-- **API Docs** — a live schema + curl-snippet viewer generated from the
-  engine's own `GET /rest/v1` OpenAPI 3 document, plus a full **GET/POST/
-  PATCH/DELETE explorer** exercising the real `select=`/filter (`eq/neq/gt/
-  gte/lt/lte/like/ilike/in/is`)/`order=`/`limit`/`offset` query surface over
-  `/rest/v1/<table>` and rendering results live — including **embedded
-  resources** (`?select=id,customer(name)` forward, `?select=id,
-  orders(id,total)` reverse) with per-embed filter/order/limit/offset
-  (dotted `<embed>.<col>=` params), embed options derived from real
-  foreign-key metadata, and `Prefer: count=exact` / `return=representation|
-  minimal` support with the real `Content-Range` total and
-  `Preference-Applied` echo shown.
-- **GraphQL** — a schema browser over a standard introspection query against
-  the engine's `POST /graphql` (schema-derived, read + write), a callout
-  surfacing unidb's two differentiators over a relational-only
-  Supabase/pg_graphql stack (`edges(type, direction)` graph traversal;
-  root `near_<table>(vector, k)` vector similarity), starter queries built
-  from the real schema, a query editor that runs real queries and renders
-  the real `{data, errors}` response, and **mutations**
-  (`insert_/update_/delete_<table>`) with typed starter bodies built from
-  each table's real scalar columns, resolving through the same enforced
-  write path as `/rest/v1`/`/sql`.
-- **Users** — superuser user management over `/auth/admin/users`: paginated
-  list with real total counts, create/edit/delete, ban/unban, and JSON
-  editors for `app_metadata`/`user_metadata`. Never renders a password hash
-  or session token; the last-superuser-lockout guard is enforced
-  server-side and surfaced verbatim, not reimplemented client-side.
-- **Webhooks** — database webhook management over `/webhooks`: target URL,
-  table pattern, event selection, a write-only signing secret, and enable/
-  disable, plus a help block documenting the real CDC-envelope body and
-  `X-Unidb-Signature` HMAC contract. The secret is never shown back — `GET`
-  only ever returns `has_signing_secret: true|false`.
-- **Channel Authz** — realtime channel authorization policies over
-  `/realtime/policies` (`topic_pattern`, `operation`, `allowed_roles`),
-  structurally mirroring the Policies panel's role-chip picker, plus a
-  documentation-only note on the `UNIDB_REALTIME_REQUIRE_AUTHZ` posture
-  (this is a server env var with no read API, so the Studio explains both
-  postures rather than claiming to know which one is live).
+  deployment. Tokens shown here are kept in-memory only, never persisted
+  or swapped into the Studio's own bearer token.
 
 ## Storage panel
 
@@ -206,24 +204,26 @@ flagged here rather than worked around with invented behavior, per this
 repo's `CLAUDE.md` rule. **No open gaps as of this writing** — both items
 below were flagged in an earlier session against an at-the-time-current
 `unidb` clone and have since shipped on `unidb` main; kept here as a
-resolved record rather than deleted outright (see
-`docs/AUTH_POLICY_PANELS_PLAN.md` for the full live-verification detail of
-each fix).
+resolved record rather than deleted outright.
 
 - **Resolved (item 145, PR #248): reading back a sent recovery/magic-link
   email.** The default `UNIDB_EMAIL_TRANSPORT=log` writes the rendered
   email to a server-side file with no HTTP route to read it back — flagged
   as a gap in an earlier session. `GET`/`DELETE /auth/dev-inbox` now
-  closes it (superuser-only, `404` on a real-SMTP deployment); the
-  Authentication panel's Email auth flows card has a live dev-inbox viewer
-  that fills the redemption token for you instead of requiring a
-  hand-copied value.
+  closes it (superuser-only, `404` on a real-SMTP deployment); the Auth
+  tab's Sign-in flows subtab has a live dev-inbox viewer that fills the
+  redemption token for you instead of requiring a hand-copied value.
 - **Resolved (item 143 part 2, PR #246): OAuth provider presets beyond
   Google/GitHub.** An earlier session found no trace of apple/azure/
   gitlab/discord/facebook presets against its `unidb` clone at the time.
   Item 143 part 2 has since shipped — all seven preset providers are now
-  live in the Authentication panel, each independently feature-detected
-  exactly like Google/GitHub always were.
+  live in the Auth tab, each independently feature-detected exactly like
+  Google/GitHub always were.
+- **Resolved (this session): the v2 (React) app was missing 8 panels/
+  features the v1 (Svelte) app had already shipped, and both apps were
+  missing a Cron Jobs panel (item 144) and a Broadcast & Presence panel
+  (item 132) despite the engine having full support for both.** v2 is now
+  current with everything on `unidb` main through PR #250.
 
 ## Notes / known limitations
 
@@ -240,5 +240,7 @@ each fix).
 
 ## Stack
 
-Vite + Svelte 5, no component library, no runtime dependencies beyond Svelte.
-The entire wire contract lives in one module, [`src/lib/api.js`](src/lib/api.js).
+Vite + React 19 + TypeScript + Tailwind v4 + shadcn/ui ("new-york" style).
+The entire wire contract lives in one module,
+[`src/lib/engine/api.js`](src/lib/engine/api.js) — every component speaks in
+terms of the normalized shapes it returns, never raw `fetch` responses.
