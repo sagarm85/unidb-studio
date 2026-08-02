@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Search, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { getLogs } from '@/lib/engine/api.js';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { TimeRangePicker } from './TimeRangePicker';
 import type { CatalogError } from '@/hooks/useCatalog';
 import { cn } from '@/lib/utils';
@@ -211,7 +212,22 @@ export function LogsPanel() {
   }
 
   return (
-    <div className="relative flex h-full gap-0 overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="p-2 pb-0">
+        <PanelHelp
+          summary="Structured engine logs — WAL writes, checkpoints, recovery, slow queries — filtered and searchable."
+          what={
+            <>
+              Streams from <code>GET /logs</code>, newest-first. Filter by time range, log level, and event type in the sidebar. Each line is
+              the engine's real structured log record (JSON fields) — nothing injected or fabricated. This is how "did recovery work" and
+              "which query was slow" are answerable.
+            </>
+          }
+          actions={['Set a time range and Search', 'Narrow by level (error/warn) or event type in the sidebar']}
+          routes={['GET /logs']}
+        />
+      </div>
+      <div className="relative flex min-h-0 flex-1 gap-0 overflow-hidden">
       <button
         className="absolute top-2.5 left-0 z-10 flex size-[22px] items-center justify-center rounded-sm border border-border bg-card text-text-muted transition-transform hover:border-border-strong hover:text-foreground"
         style={{ transform: sidebarOpen ? 'translateX(210px)' : 'translateX(4px)' }}
@@ -434,6 +450,7 @@ export function LogsPanel() {
             ) : null}
           </>
         )}
+      </div>
       </div>
     </div>
   );

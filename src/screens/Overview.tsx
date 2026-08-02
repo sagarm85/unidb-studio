@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Table2, Terminal, Network } from 'lucide-react';
 import { BASE_URL, IS_CONFIGURED, getToken, getStats, getStatsHistory } from '@/lib/engine/api.js';
 import { StatCard } from '@/components/StatCard';
+import { PanelHelp } from '@/components/PanelHelp';
 import { EmptyState } from '@/components/EmptyState';
 import { MetricChart, type MetricPoint } from '@/components/MetricChart';
 import type { CatalogTable, CatalogError } from '@/hooks/useCatalog';
@@ -144,6 +145,17 @@ export function Overview({
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto flex max-w-[1200px] flex-col gap-8 p-8">
+        <PanelHelp
+          summary="At-a-glance project health — live engine stats plus quick links into every tab."
+          what={
+            <>
+              Stat cards and a metrics chart sourced from <code>GET /stats</code> and <code>GET /stats/history</code>, updating live. Nothing
+              here is fabricated — cards sit at their empty state until the engine returns data. Use the links to jump into Table Editor, SQL,
+              Schema, and the platform panels.
+            </>
+          }
+          routes={['GET /stats', 'GET /stats/history']}
+        />
         <header>
           <h1 className="m-0 mb-2 text-xl font-semibold text-foreground">unidb studio</h1>
           {IS_CONFIGURED && (

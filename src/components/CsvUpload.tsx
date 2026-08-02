@@ -5,6 +5,7 @@ import { runSql } from '@/lib/engine/api.js';
 import { parseCsv } from '@/lib/engine/csv.js';
 import { quoteIdent } from '@/lib/engine/format.js';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import type { CatalogTable, CatalogError } from '@/hooks/useCatalog';
 import { cn } from '@/lib/utils';
 
@@ -108,6 +109,18 @@ export function CsvUpload({ tables = [] }: { tables?: CatalogTable[] }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <PanelHelp
+        summary="Load a CSV into a table as batched INSERTs — demo-sized, not bulk COPY."
+        what={
+          <>
+            Pick a file and a target table; each row becomes one <code>INSERT</code>, batched into one transaction per request to cut
+            round-trips. Values are inserted as quoted string literals and coerced to each column's type by the engine. Fine for demo-sized
+            files — there's no <code>COPY</code> path over REST, so it isn't for large data loads.
+          </>
+        }
+        actions={['Drop a CSV, map it to a table, and import', 'Verify the row count in Table Editor afterward']}
+        routes={['POST /sql (batched INSERTs)']}
+      />
       <label
         className={cn(
           'relative flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong bg-card px-4 py-8 text-center transition-colors',

@@ -16,6 +16,7 @@ import { recordQuery } from '@/lib/engine/queryStore.js';
 import { embed, vectorToSql } from '@/lib/engine/embed.js';
 import { DataGrid, type DataGridResult } from './DataGrid';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import type { CatalogError } from '@/hooks/useCatalog';
 import { cn } from '@/lib/utils';
 
@@ -398,6 +399,19 @@ export function SqlEditor({
 
   return (
     <div className="flex flex-col gap-3">
+      <PanelHelp
+        summary="Run SQL against the live engine — with saved queries, history, transactions, and EXPLAIN."
+        what={
+          <>
+            Run any statement; a single <code>SELECT</code> pages through a server cursor rather than fetching an unbounded set. Open a{' '}
+            <strong>transaction session</strong> and every statement runs in it (no auto-commit) until you commit/roll back.{' '}
+            <code>EXPLAIN</code> / <code>EXPLAIN ANALYZE</code> show a round-trip-vs-server-exec timing split. Save/pin queries, browse
+            history, and use the <strong>Embed</strong> button to turn plain text into a <code>NEAR()</code> vector.
+          </>
+        }
+        actions={['Run a JOIN, then EXPLAIN ANALYZE it', 'Start a session, run two writes, then commit or roll back']}
+        routes={['POST /sql', 'POST /sql/cursor', 'POST /txn/begin|commit|rollback']}
+      />
       {/* Session bar */}
       <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
         {session ? (

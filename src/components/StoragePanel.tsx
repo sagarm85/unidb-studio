@@ -3,6 +3,7 @@ import { Database, Plus, RefreshCw, Upload, Download, Link as LinkIcon, X } from
 import { listBuckets, createBucket, deleteBucket, listObjects, uploadObject, deleteObject, getObjectUrl } from '@/lib/engine/api.js';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { cn } from '@/lib/utils';
+import { PanelHelp } from './PanelHelp';
 
 interface Bucket {
   name: string;
@@ -263,7 +264,23 @@ export function StoragePanel() {
   }
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="p-2 pb-0">
+        <PanelHelp
+          summary="Object storage — buckets and files over /storage/*, with per-object authorization."
+          what={
+            <>
+              Create buckets (public/private), upload/download/delete objects, and issue presigned URLs. Access is authorized per caller:
+              private buckets are owner-only, public buckets are readable-by-anyone (writes/deletes stay owner-only), and a superuser /{' '}
+              <code>service_role</code> token bypasses both. Each object shows its <strong>owner</strong> (the JWT <code>sub</code> that
+              uploaded it). Small objects are stored inline; larger ones offload to the configured S3/MinIO backend.
+            </>
+          }
+          actions={['Create a bucket, upload a file, then download it via a presigned URL', 'Toggle a bucket public/private and see the badge change']}
+          routes={['GET/POST /storage/buckets', 'GET/PUT/DELETE /storage/{bucket}/objects/{key}', '/storage/{bucket}/presign/{key}']}
+        />
+      </div>
+      <div className="flex min-h-0 flex-1">
       <aside className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-border bg-surface">
         <div className="flex items-center gap-1 border-b border-border px-3 py-2.5">
           <span className="flex-1 text-xs font-bold tracking-wide text-text-muted uppercase">Buckets</span>
@@ -563,6 +580,7 @@ export function StoragePanel() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </div>
     </div>
   );
 }
