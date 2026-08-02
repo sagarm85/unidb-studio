@@ -91,7 +91,28 @@ function devTokenPlugin(): Plugin {
     name: 'unidb-dev-token',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use('/__token', (_req, res) => {
+      server.middlewares.use('/__token', (req, res) => {
+        const secret = process.env.UNIDB_JWT_SECRET ?? 'dev-secret'
+
+        // `?sub=<username>` — the "Switch user" control. Mint a short-lived
+        // signed token for an arbitrary subject, the same passwordless dev
+        // mechanism as the default `dev` token (trusts the shared HS256
+        // secret). Deliberately NOT persisted to .env.local and NOT
+        // bootstrapped as a superuser: it's a throwaway identity for driving
+        // the app as that user. Dev-server only — never in a build.
+        let sub: string | null = null
+        try {
+          sub = new URL(req.url ?? '', 'http://localhost').searchParams.get('sub')
+        } catch {
+          /* malformed URL — treat as no sub */
+        }
+        if (sub && sub !== 'dev') {
+          const minted = mintToken(secret, sub, 3600)
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ token: minted.token, exp: minted.exp, sub, refreshed: true }))
+          return
+        }
+
         const envPath = resolve(server.config.root, '.env.local')
         const lines = existsSync(envPath)
           ? readFileSync(envPath, 'utf8').split('\n')
@@ -105,7 +126,6 @@ function devTokenPlugin(): Plugin {
         if (exp && exp - now > MIN_REMAINING_SECONDS) {
           out = { token: current, exp, refreshed: false }
         } else {
-          const secret = process.env.UNIDB_JWT_SECRET ?? 'dev-secret'
           out = { ...mintToken(secret), refreshed: true }
           const line = `${TOKEN_KEY}=${out.token}`
           if (idx >= 0) lines[idx] = line

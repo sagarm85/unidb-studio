@@ -6,6 +6,7 @@ import { Badge } from './ui/badge';
 import { Textarea } from './ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 import type { CatalogError } from '@/hooks/useCatalog';
 
@@ -199,11 +200,23 @@ export function WebhooksPanel({ tables }: { tables: { name: string }[] }) {
         </div>
       </div>
 
-      <div className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-text-light">
-        CDC envelope body: <code>{'{table, op, row, ts}'}</code> per delivery. When a signing secret is configured, deliveries carry{' '}
-        <code>X-Unidb-Signature: sha256=&lt;hex HMAC-SHA256(secret, raw body)&gt;</code>. At-least-once, ≤5 retries — a dead endpoint can't wedge the
-        stream. The secret is never returned by <code>GET /webhooks</code>, only <code>has_signing_secret</code>.
-      </div>
+      <PanelHelp
+        summary="Fire an outbound HTTP POST to your own endpoint every time a row changes — no Kafka, no polling worker."
+        what={
+          <>
+            Register a hook and unidb calls your URL straight from the transaction log whenever a matching row is
+            inserted/updated/deleted. Body is the CDC envelope <code>{'{table, op, row, ts}'}</code>. With a signing secret,
+            deliveries carry <code>X-Unidb-Signature: sha256=&lt;HMAC-SHA256(secret, raw body)&gt;</code>. At-least-once with ≤5
+            retries, so a dead endpoint can't wedge the stream. The secret is never returned by <code>GET /webhooks</code> — only{' '}
+            <code>has_signing_secret</code>. Superuser-only.
+          </>
+        }
+        actions={[
+          'New webhook → set an id, target URL, a table pattern, and which events to fire on',
+          'Toggle a hook off/on or delete it; verify deliveries against your own receiver',
+        ]}
+        routes={['POST /webhooks', 'GET /webhooks', 'DELETE /webhooks/{id}']}
+      />
 
       {error && <ErrorBox error={error} />}
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { PanelHelp } from './PanelHelp';
 
 // Loads /benchmark-results.json written by demo/compare.py and renders a
 // side-by-side unidb vs Postgres comparison with bar charts. Static file
@@ -86,6 +87,19 @@ export function ComparePanel() {
 
   return (
     <div className="flex max-w-[960px] flex-col gap-4.5 text-md">
+      <PanelHelp
+        summary="unidb vs Postgres on the same workload — read the caveat, not just the bars."
+        what={
+          <>
+            This is a <strong>single-model CRUD</strong> comparison — Postgres's home turf, where unidb is <em>expected</em> to be in the same
+            ballpark while also carrying vector + graph + queue on one node. Don't read it as "unidb is faster." The real win is the
+            cross-domain story: the row + embedding + edge + event write is <strong>one commit</strong> for unidb vs four round-trips to four
+            systems with no shared transaction. Numbers here are written by <code>demo/compare.py</code> to{' '}
+            <code>public/benchmark-results.json</code>.
+          </>
+        }
+        actions={['Regenerate with demo/compare.py --size 50k, then Refresh', 'Compare latency per query kind; note the honest caveat above']}
+      />
       <div className="flex items-center justify-between">
         <div className="flex flex-wrap items-baseline gap-2.5">
           <h2 className="m-0 text-lg font-medium text-foreground">unidb vs Postgres</h2>

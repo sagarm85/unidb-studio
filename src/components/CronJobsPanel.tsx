@@ -6,6 +6,7 @@ import { Badge } from './ui/badge';
 import { Textarea } from './ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 import type { CatalogError } from '@/hooks/useCatalog';
 
@@ -168,11 +169,22 @@ export function CronJobsPanel() {
         </div>
       </div>
 
-      <div className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-text-light">
-        Standard 5-field cron (<code>minute hour day-of-month month day-of-week</code>), evaluated in the server's local time, minute granularity.{' '}
-        <code>run_as</code> narrows the job's SQL to that principal's own grants/RLS; blank = embedded/superuser identity. No run history is kept — only
-        in-memory last-run status, reset on server restart.
-      </div>
+      <PanelHelp
+        summary="Run SQL on a cron schedule inside the database — pg_cron parity, no external scheduler."
+        what={
+          <>
+            Register a job as <code>(name, schedule, sql, run_as?)</code>. Standard 5-field cron
+            (<code>minute hour day-of-month month day-of-week</code>), evaluated in the server's local time at minute granularity.{' '}
+            <code>run_as</code> narrows the job's SQL to that principal's own grants/RLS; blank = embedded/superuser identity. No run
+            history is kept — only in-memory last-run status, reset on server restart. Superuser-only.
+          </>
+        }
+        actions={[
+          'New job → e.g. name "nightly-cleanup", schedule "0 3 * * *", SQL to run',
+          'Toggle a job off/on or delete it; check the last-run status column',
+        ]}
+        routes={['GET /cron/jobs', 'POST /cron/jobs', 'DELETE /cron/jobs/{name}']}
+      />
 
       {error && <ErrorBox error={error} />}
 

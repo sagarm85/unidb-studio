@@ -617,6 +617,7 @@ function GrantsTab({
   const [draftAll, setDraftAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CatalogError | null>(null);
+  const [revokeConfirm, setRevokeConfirm] = useState<Grant | null>(null);
 
   const filtered = grants.filter((g) => (!filterGrantee || g.role === filterGrantee) && (!filterTable || g.table === filterTable));
 
@@ -654,7 +655,9 @@ function GrantsTab({
     });
   }
   function revoke(g: Grant) {
-    run(`REVOKE ${g.operation} ON ${quoteIdent(g.table)} FROM ${quoteIdent(g.role)}`, 'Grant revoked');
+    run(`REVOKE ${g.operation} ON ${quoteIdent(g.table)} FROM ${quoteIdent(g.role)}`, 'Grant revoked', () =>
+      setRevokeConfirm(null),
+    );
   }
 
   return (
@@ -706,7 +709,7 @@ function GrantsTab({
                 {g.table}
               </span>
               <Badge variant={opVariant(g.operation)}>{g.operation}</Badge>
-              <button className="justify-self-end text-sm text-text-muted hover:text-error" onClick={() => revoke(g)} disabled={busy}>
+              <button className="justify-self-end text-sm text-text-muted hover:text-error" onClick={() => setRevokeConfirm(g)} disabled={busy}>
                 Revoke
               </button>
             </div>
@@ -775,6 +778,33 @@ function GrantsTab({
               disabled={busy || !draftGrantee || !draftTable || (!draftAll && draftPrivs.size === 0)}
             >
               Grant
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!revokeConfirm} onOpenChange={(open) => !open && setRevokeConfirm(null)}>
+        <DialogContent className="max-w-[420px] p-0">
+          <DialogHeader className="border-b border-border px-4 py-3">
+            <DialogTitle>Revoke grant</DialogTitle>
+          </DialogHeader>
+          <div className="p-4">
+            <p className="m-0 text-md leading-relaxed">
+              This will revoke <code className="rounded-sm border border-border bg-secondary px-1 font-mono text-sm">{revokeConfirm?.operation}</code> on{' '}
+              <code className="rounded-sm border border-border bg-secondary px-1 font-mono text-sm">{revokeConfirm?.table}</code> from{' '}
+              <code className="rounded-sm border border-border bg-secondary px-1 font-mono text-sm">{revokeConfirm?.role}</code>. This cannot be undone.
+            </p>
+          </div>
+          <DialogFooter className="border-t border-border px-4 py-3">
+            <button className="h-8 rounded-md border border-border bg-secondary px-3 text-md hover:border-border-strong" onClick={() => setRevokeConfirm(null)}>
+              Cancel
+            </button>
+            <button
+              className="h-8 rounded-md bg-error px-3 text-md font-semibold text-background hover:brightness-110 disabled:opacity-45"
+              onClick={() => revokeConfirm && revoke(revokeConfirm)}
+              disabled={busy}
+            >
+              Revoke
             </button>
           </DialogFooter>
         </DialogContent>

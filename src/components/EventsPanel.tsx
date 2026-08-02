@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { enableTableEvents, disableTableEvents, getCdcStatus, ackEvents, runSql } from '@/lib/engine/api.js';
 import { subscribe, getSnapshot, startStream, stopStream, clearEvents, maybeResume, type StreamEvent } from '@/lib/eventStream';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import type { CatalogTable, CatalogError } from '@/hooks/useCatalog';
 import { cn } from '@/lib/utils';
 
@@ -144,6 +145,22 @@ export function EventsPanel({ tables = [] }: { tables?: CatalogTable[] }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <PanelHelp
+        summary="The WAL-derived change-event stream — every committed insert/update/delete, live over SSE in < 5ms."
+        what={
+          <>
+            <strong>Live stream</strong> tails events over <code>GET /events/subscribe</code> (Server-Sent Events). <strong>CDC tables</strong>{' '}
+            enables/disables capture per table (<code>POST /tables/&lt;t&gt;/events</code>) — only enabled tables emit events.{' '}
+            <strong>Consumers</strong> shows durable consumer offsets/lag from <code>unidb_catalog.subscription_lag</code>. Events are
+            transactional: a rolled-back write emits nothing. No Kafka, no Debezium — it's the transaction log itself.
+          </>
+        }
+        actions={[
+          'CDC tables → enable capture on a table, then insert a row and watch it stream',
+          'Click an event to see the full before/after JSON payload',
+        ]}
+        routes={['GET /events/subscribe', 'POST /tables/{t}/events', 'GET /events/head']}
+      />
       <div className="flex gap-0.5 border-b border-border">
         {(['stream', 'cdc', 'consumers'] as const).map((t) => (
           <button

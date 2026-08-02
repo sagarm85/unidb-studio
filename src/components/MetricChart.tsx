@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Info } from 'lucide-react';
 
 export interface MetricPoint {
   t: number; // epoch ms
@@ -48,12 +49,14 @@ export function MetricChart({
   color = 'var(--chart-line)',
   label = '',
   unit = '',
+  info = '',
   fmt = (v: number | null) => v?.toFixed(1) ?? '—',
 }: {
   points?: MetricPoint[];
   color?: string;
   label?: string;
   unit?: string;
+  info?: string;
   fmt?: (v: number | null) => string;
 }) {
   const [hover, setHover] = useState<Hover | null>(null);
@@ -131,7 +134,14 @@ export function MetricChart({
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-4 pt-3.5 pb-2.5">
       <div className="flex items-baseline justify-between gap-2.5">
-        <span className="text-md font-semibold text-foreground">{label}</span>
+        <span className="flex items-center gap-1 text-md font-semibold text-foreground">
+          {label}
+          {info && (
+            <span title={info} aria-label={info} className="cursor-help text-text-faint hover:text-text-light">
+              <Info className="size-3" />
+            </span>
+          )}
+        </span>
         <span className="font-mono text-lg leading-none font-bold">{chart ? fmt(chart.cur) : '—'}</span>
       </div>
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getToken, setToken as setEngineToken, fetchAuthMeta, devLogin } from '@/lib/engine/api.js';
+import { getToken, setToken as setEngineToken } from '@/lib/engine/api.js';
 import { cn } from '@/lib/utils';
 
 // The generate flow talks to the dev server's /__token endpoint, which only
@@ -80,25 +80,20 @@ export function TokenStatus() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- dev-login fallback (item 100) ---------------------------------------
-  // GET /auth/meta is public and works against any running server — dev
-  // build, production preview, or a bare `vite build` bundle served with no
-  // Vite proxy at all — unlike /__token above, which only exists under
-  // `npm run dev`. This is what lets the Studio authenticate standalone
-  // against a UNIDB_DEV_LOGIN=1 server. Deliberately manual (username input +
-  // button), never auto-fired like /__token: unlike that route (which always
-  // mints for the fixed dev-only "dev" subject), this one issues a token for
-  // whatever username the caller types, so it must stay an explicit action.
-  const [devLoginEnabled, setDevLoginEnabled] = useState(false);
+  // ---- Switch user (dev-only) ----------------------------------------------
+  // Mints a signed token for an arbitrary subject via the dev server's
+  // `/__token?sub=<username>` middleware — the SAME passwordless mechanism as
+  // the "Generate" button (trusts the shared dev secret), just for a chosen
+  // username instead of the fixed `dev`. It deliberately does NOT go through
+  // the engine's `POST /auth/login`: that route is real, password-verified
+  // authentication now (item 121 A2), so a username-only call 422s and a
+  // passwordless demo user can never be logged into that way. This control is
+  // therefore dev-only (gated on `canGenerate`, i.e. `/__token` exists) and
+  // never ships in a build. For *production* identity switching, use the real
+  // credential flows in Auth → Sign-in flows (password / OAuth / magic-link).
   const [username, setUsername] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchAuthMeta()
-      .then((m: any) => setDevLoginEnabled(!!m.dev_login_enabled))
-      .catch(() => setDevLoginEnabled(false));
-  }, []);
 
   const login = useCallback(async () => {
     const u = username.trim();
@@ -106,7 +101,9 @@ export function TokenStatus() {
     setLoggingIn(true);
     setLoginError(null);
     try {
-      const out: any = await devLogin(u);
+      const res = await fetch(`/__token?sub=${encodeURIComponent(u)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const out = await res.json();
       setEngineToken(out.token);
       setToken(out.token);
       // Every tab fetched its data once under the previous identity —
@@ -173,16 +170,16 @@ export function TokenStatus() {
         </span>
       )}
 
-      {devLoginEnabled && (
+      {canGenerate && (
         <span className="flex items-center gap-1.5">
-          <span className="text-xs whitespace-nowrap text-text-muted">Switch user</span>
+          <span className="text-xs whitespace-nowrap text-text-muted" title="Dev-only">Switch user</span>
           <input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && login()}
             placeholder="username"
             spellCheck={false}
-            title="Dev login — issues a real token for an existing user, no password. The page reloads afterward so every tab re-reads its data as that user."
+            title="Dev-only: mints a signed token for this username via the local dev server (no password, trusts the shared dev secret). The page reloads so every tab re-reads its data as that user. Production identity switching goes through Auth → Sign-in flows (password / OAuth / magic-link)."
             className="h-6 w-24 rounded-sm border border-border bg-secondary px-1.5 font-mono text-xs outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
           />
           <button
