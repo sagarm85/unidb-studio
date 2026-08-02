@@ -832,3 +832,818 @@ export async function getObjectUrl(bucket, key, expirySecs = 3600) {
   const j = await res.json();
   return j.presigned_get_url;
 }
+
+// ── The remainder of this file was ported from the v1 (Svelte) app's
+// src/lib/api.js, which stayed current against unidb main through PR #250
+// while this file was frozen at the v2 branch's fork point (2026-07-15).
+// Same wire contract, same helper conventions (authHeaders/toApiError/
+// transportError/IS_CONFIGURED/catalogRows/CATALOG_ABSENT_CODES above) —
+// only the doc comments were reworded where they referenced Svelte-specific
+// file names. ─────────────────────────────────────────────────────────────
+
+// ---- auto REST API (item 123, C1) + full Prefer control (item 139) +
+// embed filter/order/limit/offset (item 136) ------------------------------
+// GET/POST/PATCH/DELETE /rest/v1/<table> + GET /rest/v1 (catalog-derived
+// OpenAPI 3 doc). GET /rest/v1 sits under the same require_jwt layer as
+// every other data-plane route — NOT public. Every response reuses POST
+// /sql's ExecResult JSON shape, not a bare PostgREST-style array of row
+// objects: GET -> {type:'rows', columns, rows}; POST -> {type:'inserted',
+// count}; PATCH -> {type:'updated', count}; DELETE -> {type:'deleted',
+// count}. Filter operators are exactly eq/neq/gt/gte/lt/lte/like/ilike/in/is.
+
+/**
+ * GET /rest/v1 — catalog-derived OpenAPI 3 document (item 123, C3).
+ * Degrades to `{ supported: false, doc: null }` on a pre-item-123 server
+ * (404) rather than throwing, so the panel can show a clear empty state.
+ */
+export async function getRestOpenApi() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/rest/v1`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, doc: null };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, doc: await res.json() };
+}
+
+/**
+ * GET/POST/PATCH/DELETE /rest/v1/<table>, the Prefer header (`count=exact`
+ * on GET; `return=representation|minimal` on a mutation), extra raw query
+ * params (item 136's dotted `<embed>.<col>=<op>.<val>` / `<embed>.order=` /
+ * `<embed>.limit=` / `<embed>.offset=` params, which don't fit a fixed opts
+ * shape), and a JSON request body for POST/PATCH.
+ */
+export async function restRequest(table, method, opts = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams();
+  if (opts.select) qs.set('select', opts.select);
+  for (const [col, opValue] of opts.filterParams ?? []) qs.append(col, opValue);
+  if (opts.order) qs.set('order', opts.order);
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.offset != null) qs.set('offset', String(opts.offset));
+  for (const [key, value] of opts.extraParams ?? []) qs.append(key, value);
+  const query = qs.toString();
+  const url = `${BASE_URL}/rest/v1/${encodeURIComponent(table)}${query ? `?${query}` : ''}`;
+
+  const headers = authHeaders();
+  const preferParts = [];
+  if (opts.countExact) preferParts.push('count=exact');
+  if (opts.return) preferParts.push(`return=${opts.return}`);
+  if (preferParts.length) headers['Prefer'] = preferParts.join(', ');
+  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+
+  const start = performance.now();
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  const roundTripMs = performance.now() - start;
+  if (!res.ok) throw await toApiError(res);
+
+  const text = await res.text();
+  const result = text ? JSON.parse(text) : null;
+  return {
+    result,
+    url,
+    roundTripMs,
+    status: res.status,
+    contentRange: res.headers.get('Content-Range'),
+    preferenceApplied: res.headers.get('Preference-Applied'),
+  };
+}
+
+// The three built-in roles (item 122, B3 — Supabase convention). Verified
+// against unidb's src/authz/mod.rs::RESERVED_ROLES: `anon` (no verified JWT
+// subject), `authenticated` (any verified subject, plus granted roles), and
+// `service_role` (token claims carry `"role":"service_role"` — bypasses RLS
+// like a superuser, on the audited path). Never rows in `unidb_catalog.roles`.
+export const RESERVED_ROLES = ['anon', 'authenticated', 'service_role'];
+
+// ---- credentialed auth flows (item 121, A1–A4) ---------------------------
+// POST /auth/{login,signup,refresh} all return the same shape:
+// { token, access_token, refresh_token, expires_in }. The refresh token is
+// opaque (NOT a JWT) and only ever kept in component state — this module
+// never persists it.
+async function authFlowPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+function toSession(j) {
+  return { accessToken: j.access_token ?? j.token, refreshToken: j.refresh_token, expiresIn: j.expires_in };
+}
+
+/**
+ * POST /auth/login — password login. When the user has TOTP MFA enabled
+ * (item 127), the engine issues **no session** — instead
+ * `{mfa_required: true, challenge, expires_in}`, redeemed via
+ * `mfaChallenge()` below.
+ */
+export async function authLogin(username, password) {
+  const j = await authFlowPost('/auth/login', { username, password });
+  if (j.mfa_required) return { mfaRequired: true, challenge: j.challenge, expiresIn: j.expires_in };
+  return { mfaRequired: false, ...toSession(j) };
+}
+
+/** POST /auth/signup — self-service signup (item 121 A3). 404s when UNIDB_ALLOW_SIGNUP isn't set. */
+export async function authSignup(username, password) {
+  return toSession(await authFlowPost('/auth/signup', { username, password }));
+}
+
+/** POST /auth/refresh — exchange a refresh token for a new access+refresh pair. */
+export async function authRefresh(refreshToken) {
+  return toSession(await authFlowPost('/auth/refresh', { refresh_token: refreshToken }));
+}
+
+/** POST /auth/logout — revoke a refresh-token session. Idempotent. */
+export async function authLogout(refreshToken) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- active sessions (item 4) --------------------------------------------
+/**
+ * `unidb_catalog.sessions` — one row per refresh-token session. Columns are
+ * epoch **seconds**. Visibility: a superuser sees every session, a named
+ * non-superuser sees only their own. Degrades to `{ supported: false }` on
+ * a pre-item-4 server.
+ */
+export async function listSessions() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  try {
+    const rows = await catalogRows(
+      `SELECT session_id, username, created_at, expires_at, revoked
+       FROM unidb_catalog.sessions ORDER BY created_at DESC`,
+    );
+    return {
+      supported: true,
+      sessions: rows.map((r) => ({
+        sessionId: r.session_id,
+        username: r.username,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        revoked: !!r.revoked,
+      })),
+    };
+  } catch (e) {
+    if (CATALOG_ABSENT_CODES.has(e.code)) return { supported: false, sessions: [] };
+    throw e;
+  }
+}
+
+/** DELETE /auth/sessions/{id} — revoke one session by its opaque session_id. Idempotent. */
+export async function revokeSession(sessionId) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- TOTP multi-factor authentication (item 127, Workstream D4) ----------
+export async function mfaEnroll() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/enroll`, { method: 'POST', headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, secret: j.secret, otpauthUrl: j.otpauth_url };
+}
+
+export async function mfaVerify(code) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/verify`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ code }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { enabled: !!j.enabled, recoveryCodes: j.recovery_codes ?? [] };
+}
+
+/** POST /auth/mfa/challenge — redeem a login's {challenge} + a live code for a real session. Public route. */
+export async function mfaChallenge(challenge, code) {
+  const j = await authFlowPost('/auth/mfa/challenge', { challenge, code });
+  return toSession(j);
+}
+
+export async function mfaDisable(code) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/mfa/disable`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(code ? { code } : {}),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- OAuth 2.0 social login (item 128 D1 + item 143 part 2) --------------
+// `GET /auth/oauth/{provider}/authorize` is a real browser redirect — this
+// module only *feature-detects* which of the seven preset providers are
+// configured, via a `redirect:'manual'` probe (a configured provider
+// collapses to an opaque redirect response; an unconfigured one yields a
+// readable 404). Neither route is rate-limited, so probing all seven on
+// every panel load is safe.
+const OAUTH_PROVIDERS = ['google', 'github', 'apple', 'azure', 'gitlab', 'discord', 'facebook'];
+
+export const OAUTH_PROVIDER_LABELS = {
+  google: 'Google',
+  github: 'GitHub',
+  apple: 'Apple',
+  azure: 'Microsoft',
+  gitlab: 'GitLab',
+  discord: 'Discord',
+  facebook: 'Facebook',
+};
+
+export function oauthAuthorizeUrl(provider) {
+  return `${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/authorize`;
+}
+
+async function oauthProviderConfigured(provider) {
+  try {
+    const res = await fetch(oauthAuthorizeUrl(provider), { redirect: 'manual' });
+    return res.type === 'opaqueredirect' || res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns one bool per OAUTH_PROVIDERS entry, e.g. {google, github, apple, ...}. Never throws. */
+export async function getOauthProviders() {
+  if (!IS_CONFIGURED) return Object.fromEntries(OAUTH_PROVIDERS.map((p) => [p, false]));
+  const results = await Promise.all(OAUTH_PROVIDERS.map((p) => oauthProviderConfigured(p)));
+  return Object.fromEntries(OAUTH_PROVIDERS.map((p, i) => [p, results[i]]));
+}
+
+/** GET /auth/oauth/{provider}/callback?code=&state= — completes the flow. Public route. */
+export async function oauthCallback(provider, code, state) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ code, state });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/oauth/${encodeURIComponent(provider)}/callback?${qs}`);
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return toSession(await res.json());
+}
+
+// ── GraphQL (item 130, C4; mutations item 133) ────────────────────────────
+// POST /graphql — schema-derived. Mounted under the same require_jwt layer
+// as every other data-plane route and resolves every field through the
+// identical enforced path /sql and /rest/v1 use — same RLS/grants, no
+// parallel policy engine. Always 200 with a {data, errors} envelope — a
+// GraphQL-level error is data, not a fetch failure.
+export async function graphqlRequest(query, variables = null, operationName = null) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const body = { query };
+  if (variables && Object.keys(variables).length) body.variables = variables;
+  if (operationName) body.operationName = operationName;
+  let res;
+  const start = performance.now();
+  try {
+    res = await fetch(`${BASE_URL}/graphql`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  const roundTripMs = performance.now() - start;
+  if (res.status === 404) return { supported: false, data: null, errors: null, roundTripMs };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, data: j.data ?? null, errors: j.errors ?? null, roundTripMs };
+}
+
+// Hand-written standard introspection query (no runtime dep on graphql-js).
+const TYPE_REF_FRAGMENT = `
+  kind
+  name
+  ofType {
+    kind
+    name
+    ofType {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const INTROSPECTION_QUERY = `
+  query StudioIntrospection {
+    __schema {
+      queryType { name }
+      mutationType { name }
+      types {
+        kind
+        name
+        description
+        fields(includeDeprecated: true) {
+          name
+          description
+          args { name type { ${TYPE_REF_FRAGMENT} } defaultValue }
+          type { ${TYPE_REF_FRAGMENT} }
+        }
+        enumValues(includeDeprecated: true) { name }
+      }
+    }
+  }
+`;
+
+/** Root Query/Mutation fields + every object type's fields. Degrades to {supported:false} on a pre-item-130 server. */
+export async function getGraphqlSchema() {
+  const out = await graphqlRequest(INTROSPECTION_QUERY);
+  if (!out.supported) return { supported: false, schema: null };
+  if (out.errors?.length || !out.data?.__schema) {
+    return { supported: false, schema: null, errors: out.errors ?? null };
+  }
+  return { supported: true, schema: out.data.__schema };
+}
+
+// ---- auth admin API — user management (item 142) -------------------------
+// Superuser-only /auth/admin/users/* CRUD. A GET response NEVER includes a
+// password hash, refresh token, or session detail — the server never sends
+// the sensitive value in the first place, so this module adds no
+// client-side redaction of its own.
+export async function adminListUsers({ limit = 50, offset = 0 } = {}) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, users: [], total: 0 };
+  if (!res.ok) throw await toApiError(res);
+  const j = await res.json();
+  return { supported: true, users: j.users ?? [], total: j.total ?? 0 };
+}
+
+export async function adminGetUser(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/** POST /auth/admin/users — only `username` is required; `password` is optional. */
+export async function adminCreateUser(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/** PATCH /auth/admin/users/{id} — partial update. Demoting the last superuser is rejected (403). */
+export async function adminUpdateUser(username, payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PATCH',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+/** DELETE /auth/admin/users/{id} — dropping the last superuser is rejected (403), never a silent no-op. */
+export async function adminDeleteUser(username) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/admin/users/${encodeURIComponent(username)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- database webhooks (item 141) -----------------------------------------
+// Superuser-only outbound-HTTP-on-row-change registration. GET /webhooks
+// always redacts the signing secret (`has_signing_secret: bool`).
+export async function listWebhooks() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, webhooks: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, webhooks: await res.json() };
+}
+
+/** POST /webhooks — create or upsert (by `id`). `signing_secret` is optional and write-only. */
+export async function upsertWebhook(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+export async function deleteWebhook(id) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/webhooks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- realtime channel authorization policies (item 140) ------------------
+// Superuser-only allow/deny layer in front of the broadcast/presence routes:
+// (topic_pattern, operation, allowed_roles).
+export async function listChannelPolicies() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, policies: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, policies: await res.json() };
+}
+
+/** PUT /realtime/policies — upsert, replacing the role set. operation is publish|subscribe|presence|all. */
+export async function putChannelPolicy(topicPattern, operation, roles) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, {
+      method: 'PUT',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic_pattern: topicPattern, operation, roles }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+export async function deleteChannelPolicy(topicPattern, operation) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/policies`, {
+      method: 'DELETE',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic_pattern: topicPattern, operation }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ---- email auth flows — recovery + magic link (item 138) -----------------
+// POST /auth/recover and POST /auth/magiclink always return 200 regardless
+// of whether `email` is a known account (no-account-enumeration contract).
+// `email` is looked up directly as a username today (no users.email column).
+async function authOkPost(path, body) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
+export async function authRecover(email) {
+  return authOkPost('/auth/recover', { email });
+}
+
+/** POST /auth/verify — redeem a recovery token for a new password; revokes every existing session. */
+export async function authVerifyRecovery(token, newPassword) {
+  return authOkPost('/auth/verify', { token, new_password: newPassword });
+}
+
+export async function authMagicLink(email) {
+  return authOkPost('/auth/magiclink', { email });
+}
+
+export async function authMagicLinkVerify(token) {
+  return toSession(await authFlowPost('/auth/magiclink/verify', { token }));
+}
+
+// ---- dev-inbox read route (item 145) --------------------------------------
+// Double-gated server-side: 404 when the active transport is real SMTP
+// (checked first, so a production deployment never leaks that this admin
+// surface exists), then 403 PERMISSION_DENIED for a non-superuser.
+export async function getDevInbox({ limit = 50 } = {}) {
+  if (!IS_CONFIGURED) return { supported: false, emails: [] };
+  const qs = new URLSearchParams({ limit: String(limit) });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/dev-inbox?${qs}`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, emails: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, emails: await res.json() };
+}
+
+export async function clearDevInbox() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/dev-inbox`, { method: 'DELETE', headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true };
+}
+
+// ---- scheduled jobs — cron (item 144) -------------------------------------
+// Supabase-parity pg_cron: register SQL to run on a schedule. Control-plane
+// only — the scheduler is strictly a caller of the same execute_sql path
+// every other statement uses. Superuser-only. No run *history* — only
+// in-memory last-run status, reset on server restart.
+
+/** GET /cron/jobs — every registered job merged with in-memory last-run status. */
+export async function listCronJobs() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/cron/jobs`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, jobs: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, jobs: await res.json() };
+}
+
+/**
+ * POST /cron/jobs — create or upsert (by `name`). `schedule` is a standard
+ * 5-field cron expression, validated server-side (400 INVALID_CRON_SCHEDULE
+ * on anything malformed). `run_as` (optional) narrows the job's SQL to that
+ * principal's own grants/RLS; omitted = embedded/superuser identity.
+ */
+export async function upsertCronJob(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/cron/jobs`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** DELETE /cron/jobs/{name} — idempotent; deleting an unknown name is a no-op. */
+export async function deleteCronJob(name) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/cron/jobs/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+// ── Realtime Broadcast & Presence (item 132) ──────────────────────────────
+// Purely in-memory and ephemeral — no WAL/heap/catalog involvement, a
+// server restart drops all state. Transport is SSE (same technique as
+// openEventStream above), no WebSocket route. Every authenticated caller
+// may publish/subscribe/track on a topic with no matching channel policy
+// (item 140's open-by-default posture, unless UNIDB_REALTIME_REQUIRE_AUTHZ
+// flips it to fail-closed — see the Channel Authz panel).
+
+/** POST /realtime/broadcast/publish — fan out to current subscribers. Returns real receiver count. */
+export async function publishBroadcast(topic, event, payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/broadcast/publish`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic, event, payload }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json(); // { receivers }
+}
+
+/**
+ * GET /realtime/broadcast/subscribe?topic= — SSE stream of every message
+ * published to `topic` from the moment this subscription registers.
+ * @param {{topic:string, onEvent:(e:{event:string,payload:object,ts:number})=>void, onError?:(e:Error)=>void, onOpen?:()=>void}} opts
+ * @returns {{close:()=>void}}
+ */
+export function subscribeBroadcast({ topic, onEvent, onError, onOpen }) {
+  return openSse(`/realtime/broadcast/subscribe?topic=${encodeURIComponent(topic)}`, { onEvent, onError, onOpen });
+}
+
+/**
+ * POST /realtime/presence/track — associate/update the caller's presence
+ * state under `key` on `topic`. Pushes a join/update delta to subscribers.
+ */
+export async function trackPresence(topic, key, state) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/realtime/presence/track`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ topic, key, state }),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/**
+ * GET /realtime/presence/subscribe?topic= — SSE stream: first a `sync`
+ * frame (full current presence map), then join/leave/update deltas. This
+ * connection's own lifetime IS this caller's presence membership on the
+ * topic (see REST_API.md's "v1 connection-binding model").
+ * @param {{topic:string, onEvent:(e:{event:string,payload:object,ts:number})=>void, onError?:(e:Error)=>void, onOpen?:()=>void}} opts
+ * @returns {{close:()=>void}}
+ */
+export function subscribePresence({ topic, onEvent, onError, onOpen }) {
+  return openSse(`/realtime/presence/subscribe?topic=${encodeURIComponent(topic)}`, { onEvent, onError, onOpen });
+}
+
+// Shared SSE consumer for the two routes above — same fetch+ReadableStream
+// technique as openEventStream (EventSource can't send Authorization).
+// Unlike openEventStream's raw `data:` JSON, these two routes' frames carry
+// `event: <name>` + `data: <json>`, so onEvent receives {event, ...JSON.parse(data)}.
+function openSse(path, { onEvent, onError, onOpen }) {
+  const controller = new AbortController();
+  (async () => {
+    let res;
+    try {
+      res = await fetch(`${BASE_URL}${path}`, {
+        headers: authHeaders({ Accept: 'text/event-stream' }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (!controller.signal.aborted) onError?.(transportError(err));
+      return;
+    }
+    if (!res.ok) {
+      onError?.(await toApiError(res));
+      return;
+    }
+    onOpen?.();
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep;
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const parsed = parseSseFrame(frame);
+          if (parsed?.data) {
+            try {
+              onEvent?.({ event: parsed.event, ...JSON.parse(parsed.data) });
+            } catch {
+              /* heartbeat/comment frame with non-JSON data — ignore */
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) onError?.(transportError(err));
+    }
+  })();
+  return { close: () => controller.abort() };
+}
