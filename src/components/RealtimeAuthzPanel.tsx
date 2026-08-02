@@ -156,7 +156,9 @@ export function RealtimeAuthzPanel() {
       {error && <ErrorBox error={error} />}
 
       <div className="flex-1 overflow-auto">
-        {policies.length === 0 ? (
+        {loading ? (
+          <p className="m-0 text-sm text-text-light">Loading…</p>
+        ) : policies.length === 0 ? (
           <p className="m-0 text-sm text-text-light">No channel policies — every topic is open to any authenticated caller.</p>
         ) : (
           <div className="flex flex-col gap-2">

@@ -243,7 +243,9 @@ export function UserAdminPanel() {
           <span>Created</span>
           <span />
         </div>
-        {users.length === 0 ? (
+        {loading ? (
+          <p className="m-0 p-3 text-sm text-text-light">Loading…</p>
+        ) : users.length === 0 ? (
           <p className="m-0 p-3 text-sm text-text-light">No users.</p>
         ) : (
           users.map((u) => (

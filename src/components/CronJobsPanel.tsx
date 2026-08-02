@@ -177,7 +177,9 @@ export function CronJobsPanel() {
       {error && <ErrorBox error={error} />}
 
       <div className="flex-1 overflow-auto">
-        {jobs.length === 0 ? (
+        {loading ? (
+          <p className="m-0 text-sm text-text-light">Loading…</p>
+        ) : jobs.length === 0 ? (
           <p className="m-0 text-sm text-text-light">No scheduled jobs.</p>
         ) : (
           <div className="flex flex-col gap-2">

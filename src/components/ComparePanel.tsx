@@ -58,7 +58,12 @@ export function ComparePanel() {
     setError(null);
     try {
       const res = await fetch('/benchmark-results.json', { cache: 'no-store' });
-      if (res.status === 404) {
+      // The dev server's SPA fallback returns 200 + index.html for any
+      // missing static path (only a real static host 404s a genuinely
+      // absent file) -- treat a non-JSON response the same as a 404: no
+      // results yet, not a parse error to surface.
+      const isJson = (res.headers.get('content-type') ?? '').includes('json');
+      if (res.status === 404 || (res.ok && !isJson)) {
         setData(null);
       } else if (!res.ok) {
         setError(`HTTP ${res.status}`);

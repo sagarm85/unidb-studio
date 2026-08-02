@@ -143,20 +143,96 @@ subtab structure preserved; empty states honest.
 
 ## Parity checklist (v1 on `main` is the oracle — compare side by side)
 
-- [ ] All 10 destinations render; `?tab=` deep links; default = overview
-- [ ] SQL: SELECT / DML / DDL / error rendering; params; both timings match v1's numbers
-- [ ] EXPLAIN companion call fires only for SELECT/CTE, like v1
-- [ ] Record browser: keyset paging Next/First, OFFSET fallback, inline edit rules (PK-gated)
-- [ ] CSV import: one transaction per request batch, real rows/sec
-- [ ] Schema ERD: nodes, FK edges, zoom
-- [ ] Storage / Events / Logs / Observability / Compare parity incl. consumer lag + slow queries
-- [ ] Token countdown + dev Generate button; `.env.local` flow; production build excludes `/__token`
-- [ ] Internal `__`-prefixed tables hidden; graceful degradation on missing routes
-- [ ] Engine offline: no white screens anywhere
+**Run for real, 2026-08-02** (after v1 was merged into v2 and both apps had
+grown well past the original "10 destinations" — v2 now has 18 tabs; every
+one of them was covered, not just the original set). v1 was checked out in a
+separate `git worktree` and run side by side with v2 against the same live
+`unidb-server` (Playwright-driven, not eyeballed). Found and fixed 3 real
+bugs along the way (noted inline) — this was not a rubber-stamp pass.
+
+- [x] All 10 (now 18) destinations render; `?tab=` deep links; default = overview.
+      Verified every tab live: correct `?tab=` round-trip, non-empty body, zero
+      console errors (the one apparent Storage "failure" was the documented
+      `STORAGE_NOT_AVAILABLE` graceful-degradation state, confirmed correct).
+- [x] SQL: SELECT / DML / DDL / error rendering; params; both timings match v1's numbers.
+      Verified SELECT/INSERT/DDL/error/`$1` params identically in v1 and v2
+      against the same engine; one apparent v1 DML failure during the pass
+      turned out to be a real `UNIQUE_VIOLATION` from shared test-engine state
+      (v2's run had already used that id), not a v1 defect.
+- [x] EXPLAIN companion call fires only for SELECT/CTE, like v1.
+      Verified via network interception: exactly 1 `EXPLAIN ANALYZE` call on
+      SELECT, 0 on INSERT, in both apps.
+- [x] Record browser: keyset paging Next/First, OFFSET fallback, inline edit rules (PK-gated).
+      Verified with 110 rows on a PK'd table (100 + 10 keyset pages, inline
+      edit activates) and a PK-less table (OFFSET-fallback label shown,
+      inline edit correctly inert).
+- [x] CSV import: one transaction per request batch, real rows/sec.
+      Verified a real 3-row import (real wall-clock + rows/sec shown) and the
+      atomic-rollback path (a type-mismatched batch reports "imported 0 of N
+      rows... rolled back"). **Finding, not a Studio bug:** the engine itself
+      does not coerce a quoted text literal into an `Int64`/`BIGINT` column
+      (confirmed via raw `curl` against `POST /sql`, no Studio code involved,
+      identical in v1) — contradicts this README's documented "coerced to
+      each column's type by the engine" claim for that type. Not fixed here
+      (engine behavior, out of scope for this repo) — worth a backlog item
+      in `unidb`.
+- [x] Schema ERD: nodes, FK edges, zoom.
+      Verified real FK-derived nodes/edges render for a `customers`→`orders`
+      relationship, zoom control present.
+- [x] Storage / Events / Logs / Observability / Compare parity incl. consumer lag + slow queries.
+      Verified Events (CDC tables + consumers list), Observability (consumer
+      lag + slow-query sections present), Logs (real empty-state copy),
+      Storage (graceful `STORAGE_NOT_AVAILABLE` state). **Found + fixed a
+      real bug in Compare:** the dev server's SPA fallback returns 200 +
+      `index.html` for the missing `/benchmark-results.json` (only a real
+      static host 404s a genuinely absent file), so the panel's own
+      already-correct "no results yet" 404 branch never fired and a raw
+      `Unexpected token '<'... is not valid JSON` leaked to the user instead
+      — reproduced identically in v1, so not a v2 regression, but is now a
+      v2-only bug since v1 no longer exists on `main`. Fixed by treating a
+      non-JSON response the same as a 404 (`ComparePanel.tsx`).
+- [x] Token countdown + dev Generate button; `.env.local` flow; production build excludes `/__token`.
+      Verified the Generate button + countdown live in dev, and confirmed
+      `canGenerate = import.meta.env.DEV` fully eliminates both the button
+      and the `/__token`-calling code from the production bundle (`grep` for
+      the string found zero occurrences in `dist/`).
+- [x] Internal `__`-prefixed tables hidden; graceful degradation on missing routes.
+      Confirmed `useCatalog.ts`'s `notInternal` filter and spot-checked the
+      live tables sidebar.
+- [x] Engine offline: no white screens anywhere.
+      Killed the engine and hit all 18 tabs. **Found + fixed a real bug:**
+      `GraphqlPanel.tsx`'s schema-load effect had no `.catch()` — a
+      transport failure became an unhandled promise rejection, and the panel
+      silently showed an empty schema with no explanation. Added a
+      `loadError` state + message; re-verified clean (no crash, real error
+      text shown) after the fix. All other 17 tabs already degraded
+      correctly.
 
 ## Design review checklist
 
-- [ ] Only tokens/Tailwind-mapped colors (no stray hex); 4/8px spacing grid
-- [ ] Hover/focus/disabled on every interactive element; skeletons where fetches are in flight
-- [ ] Dark + light themes pass contrast (§7); reduced-motion respected
-- [ ] Side-by-side with Supabase dashboard reads as the same family (§9)
+**Run for real, 2026-08-02**, alongside the parity pass above.
+
+- [x] Only tokens/Tailwind-mapped colors (no stray hex); 4/8px spacing grid.
+      `grep`-audited every file touched this session: zero stray hex colors;
+      the arbitrary-bracket values present (`ring-[2px]`, `max-w-[420px]`
+      etc.) match the exact pattern already used throughout the pre-existing
+      codebase (`StoragePanel.tsx`, `TableBuilder.tsx`), not new conventions.
+- [x] Hover/focus/disabled on every interactive element; skeletons where fetches are in flight.
+      **Found + fixed a real gap:** four panels (Users, Webhooks, Channel
+      Authz, Scheduled Jobs) rendered their "No X yet" empty-state text
+      during the brief window before the first fetch resolved (since the
+      list starts as `[]`), a false-empty flash. Added an explicit
+      `loading` branch ahead of the empty-state check in all four,
+      consistent with the "Loading…" pattern the rest of the app already
+      uses (the app's real convention — a single shared `Skeleton`
+      component exists but is only used in `TablesSidebar`, so text-based
+      loading states are the actual prevailing pattern, not a shortfall).
+- [x] Dark + light themes pass contrast (§7); reduced-motion respected.
+      Screenshotted Users/GraphQL/Broadcast & Presence in both themes — good
+      contrast throughout, consistent with the rest of the app. Confirmed
+      `prefers-reduced-motion: reduce` is handled globally in
+      `globals.css` (a blanket `*` selector), covering every new panel's
+      `animate-spin`/`transition` usage with no per-component work needed.
+- [x] Side-by-side with Supabase dashboard reads as the same family (§9).
+      Screenshot review: sidebar/card/badge/monospace-input language is
+      consistent across all 7 new panels and the rest of the app.

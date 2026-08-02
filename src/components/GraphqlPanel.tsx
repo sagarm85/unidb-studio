@@ -66,6 +66,7 @@ export function GraphqlPanel() {
   const [supported, setSupported] = useState(true);
   const [schema, setSchema] = useState<GqlSchema | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedField, setSelectedField] = useState<GqlField | null>(null);
   const [query, setQuery] = useState('');
   const [running, setRunning] = useState(false);
@@ -77,6 +78,7 @@ export function GraphqlPanel() {
         setSupported(out.supported);
         setSchema(out.schema as GqlSchema);
       })
+      .catch((e: any) => setLoadError(e?.message ?? String(e)))
       .finally(() => setLoading(false));
   }, []);
 
@@ -149,6 +151,14 @@ export function GraphqlPanel() {
   const btnCls = 'h-8 rounded-md bg-brand px-3 text-md font-semibold text-brand-text-on hover:bg-brand-hover disabled:opacity-45';
 
   if (loading) return <p className="p-4 text-sm text-text-light">Loading…</p>;
+  if (loadError) {
+    return (
+      <div className="flex flex-col gap-2 p-4">
+        <h3 className="m-0 text-md font-semibold">Could not load the GraphQL schema</h3>
+        <p className="m-0 text-sm text-error">{loadError}</p>
+      </div>
+    );
+  }
   if (!supported) {
     return (
       <div className="flex flex-col gap-2 p-4">

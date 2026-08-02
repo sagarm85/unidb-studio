@@ -208,7 +208,9 @@ export function WebhooksPanel({ tables }: { tables: { name: string }[] }) {
       {error && <ErrorBox error={error} />}
 
       <div className="flex-1 overflow-auto">
-        {webhooks.length === 0 ? (
+        {loading ? (
+          <p className="m-0 text-sm text-text-light">Loading…</p>
+        ) : webhooks.length === 0 ? (
           <p className="m-0 text-sm text-text-light">No webhooks registered.</p>
         ) : (
           <div className="flex flex-col gap-2">
