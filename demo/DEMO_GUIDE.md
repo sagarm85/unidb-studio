@@ -57,6 +57,7 @@ until docker exec pg-demo pg_isready -U demo 2>/dev/null; do sleep 1; done && ec
 nohup env \
   UNIDB_DATA_DIR=/tmp/unidb-demo-data \
   UNIDB_JWT_SECRET=dev-secret \
+  UNIDB_DEV_LOGIN=1 \
   UNIDB_REQUEST_TIMEOUT_SECS=300 \
   UNIDB_BUFFER_POOL_PAGES=1000000 \
   STORAGE_BACKEND=minio \
@@ -132,6 +133,32 @@ python3 demo/seed.py --size 50k       # ~75k rows, ~4s  ← good default
 
 ---
 
+### Step 5b — Seed demo identities (roles, grants, RLS)
+
+So the Auth / Users / Preview / Switch-user scenes have real, *differentiated*
+users to show — not just the `dev` superuser:
+
+```bash
+python3 demo/seed_auth.py
+```
+
+Creates three password users, each with a visibly different authorization
+footprint over the seeded schema (run **after** Step 5 — it needs the
+`customers` table):
+
+| User | Password | Role | Sees |
+|------|----------|------|------|
+| `analyst` | `Analyst!2345` | `analytics` | SELECT on every table; **all** customers |
+| `eu_support` | `Support!2345` | `support` | customers **restricted by RLS to Germany** (52 rows), + orders |
+| `orders_clerk` | `OpsClerk!2345` | `ops` | SELECT/INSERT/UPDATE on orders + order_items only; **blocked** on customers/invoices |
+
+`dev` (superuser) bypasses all of it, so every other scene is unaffected — the
+differences only appear once you **Switch user** to / **Preview** one of these.
+The script prints a live `POST /auth/preview` check proving each user sees
+exactly what it should.
+
+---
+
 ### Step 6 — Load vector + document data
 
 ```bash
@@ -177,6 +204,7 @@ Run through this before the audience arrives:
 | 8 | Auth panel loads | Studio → Auth → Roles subtab lists users/roles (no 403 banner) |
 | 9 | Compare data ready | Studio → Compare tab → bar chart visible (optional — see Scene 9 caveat) |
 | 10 | Scene 0 works | `python3 demo/unified_txn_demo.py` → commit shows `delivered to consumer = 1`, rollback shows `= 0` |
+| 11 | Demo identities seeded | `python3 demo/seed_auth.py` → preview shows eu_support=52, analyst=1000, orders_clerk blocked; Users tab lists all three |
 
 ---
 
@@ -518,8 +546,11 @@ this chart."
    real `target_roles`.
 
 3. **Preview** — `POST /auth/preview`: pick a user/role and run a query **as
-   them**, seeing the RLS-filtered result. Run `SELECT * FROM customers` as an
-   `authenticated` user vs. as `dev` (superuser bypass) to show the filter bite.
+   them**, seeing the RLS-filtered result — no impersonation token needed.
+   Run `SELECT COUNT(*) FROM customers` as `eu_support` → **52** (Germany only),
+   as `analyst` → **1000** (all), as `orders_clerk` → **blocked** (no grant), as
+   `dev` → **1000** (superuser bypass). The seeded policies from Step 5b make the
+   filter visibly bite.
 
 4. **Whoami** — `GET /auth/whoami`: the caller's identity/privileges (this is what
    Step 4b's check reads).
@@ -545,16 +576,27 @@ MFA, OAuth, magic-link — with no separate auth service and no second datastore
 
 **Studio → Users tab** — superuser user management over `/auth/admin/users`.
 
+- The three seeded users (`analyst`, `eu_support`, `orders_clerk`) from Step 5b
+  are listed alongside `dev`, each with its role and status.
 - Click **New user**: username, optional password (blank = passwordless,
   OAuth/magic-link only), **Superuser** / **Banned** toggles, and
   `app_metadata` / `user_metadata` JSON.
   - `app_metadata` = admin-controlled, trusted claims (roles, plan tier) readable
     in RLS via `auth.jwt() ->> 'claim'`.
   - `user_metadata` = user-editable profile (display name, avatar).
-- Create `sagarm` with a password, then hop to **Auth → Sign-in flows** and log in
-  as that user to show the credential flow end-to-end.
 - **Banned** blocks login/refresh (`403 USER_BANNED`) and revokes all the user's
   sessions — the "disable without deleting" switch.
+
+**Then switch identity live (dev-only):** in the header's **Switch user** field,
+type `eu_support` → the whole Studio now acts as that user. Go to **Table Editor
+→ customers**: only the **52 German** rows are visible (RLS biting). Switch to
+`orders_clerk` → the Users / Webhooks / Cron tabs now show the
+`403 must be a superuser` banner (RBAC biting). Clear the field / reload to
+return to `dev`.
+
+> The header **Switch user** is a **dev-only** convenience — it mints a signed
+> token for the username via the local dev server (no password). It is *not*
+> production auth; the real credential path is the next scene.
 
 ---
 
@@ -630,6 +672,41 @@ enforced by the same RLS engine.
 
 ---
 
+### Scene 15 — Sign-in flows: the *real* auth path  *(3 min — close the auth story here)*
+
+> Scene 11's **Switch user** is a dev shortcut (mint-a-token, no password). This
+> scene is the counterpart: the **production** credential flows the engine
+> actually ships. Use it to answer the inevitable "…but how do users *really* log
+> in?" — the answer is not the dev shortcut.
+
+**Studio → Auth tab → Sign-in flows subtab.** All live against the real routes;
+nothing mocked.
+
+- **Password login** — sign in as a seeded user, e.g. `analyst` / `Analyst!2345`
+  (`POST /auth/login`, argon2id-verified — item 121 A2). Contrast with a wrong
+  password → the uniform `INVALID_CREDENTIALS`. This is the same route the broken
+  dev-login used to hit passwordless; it's real authentication now.
+- **Signup / refresh / logout** — the full `POST /auth/{signup,refresh,logout}`
+  lifecycle.
+- **TOTP MFA** — enroll (`POST /auth/mfa/enroll` → shows the `otpauth://` URI +
+  one-time recovery codes), verify, and see the login-time `mfa_required`
+  challenge shape when a user has MFA on.
+- **OAuth** — buttons for the seven presets (Google/GitHub/Apple/Microsoft/
+  GitLab/Discord/Facebook); each self-hides unless configured server-side
+  (`UNIDB_OAUTH_<PROVIDER>_CLIENT_ID`/`_SECRET`).
+- **Email flows** — password recovery (`POST /auth/recover` → `verify`) and
+  magic-link (`POST /auth/magiclink` → `verify`), both showing the uniform
+  `{ok:true}` no-enumeration response, plus the superuser-only **dev-inbox
+  viewer** that reads back the captured email and fills the redemption token for
+  you (present only on `UNIDB_EMAIL_TRANSPORT=log`).
+
+**Why this closes the story:** production identity is passwords + MFA + OAuth +
+magic-link — all real, all on one engine. The dev **Switch user** button is
+demo scaffolding on top; this subtab is the truth. Tokens shown here are
+in-memory only and never swapped into the Studio's own bearer token.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -685,6 +762,7 @@ superuser `dev` — no token change needed.
 | Script | Purpose |
 |--------|---------|
 | `unified_txn_demo.py` | **Scene 0** — one atomic txn across relational + vector + graph + event, plus the rollback proof (self-contained; needs `dev` superuser) |
+| `seed_auth.py` | **Step 5b** — 3 demo users + roles + grants + an RLS policy so Auth / Preview / Switch-user differ visibly (needs the e-commerce seed + `dev` superuser) |
 | `setup_schema.py` | Drop + recreate 6 tables with FK constraints |
 | `seed.py --size N` | Bulk-insert e-commerce data |
 | `benchmark.py` | 8 representative queries + engine latency stats |

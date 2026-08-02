@@ -13,6 +13,7 @@ import {
 } from '@/lib/engine/schema.js';
 import { isVectorType } from '@/lib/engine/format.js';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu';
 import type { CatalogTable, CatalogRelationship, CatalogError } from '@/hooks/useCatalog';
@@ -186,6 +187,20 @@ export function SchemaVisualizer({ tables = [] }: { tables?: CatalogTable[] }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-2">
+        <PanelHelp
+          summary="A live ER diagram built from the engine's real primary and foreign keys — it never drifts from reality."
+          what={
+            <>
+              Nodes are tables, edges are FK relationships, all read from <code>information_schema</code> + <code>unidb_catalog</code> — not a
+              hand-drawn diagram. Drag to pan, click a table to highlight its relationships and columns. Add a table in the SQL Editor and hit
+              refresh — it appears here immediately. A DDL view is available too.
+            </>
+          }
+          actions={['Click a table node to focus its FK edges', 'Create a table in SQL, refresh, and watch it appear']}
+          routes={['GET /tables', 'information_schema', 'unidb_catalog']}
+        />
+      </div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-baseline gap-3">
           <strong className="text-lg font-medium text-foreground">Schema</strong>

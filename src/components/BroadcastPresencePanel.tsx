@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Radio, Send, Users2 } from 'lucide-react';
 import { publishBroadcast, subscribeBroadcast, subscribePresence, trackPresence } from '@/lib/engine/api.js';
 import { Badge } from './ui/badge';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 
 // Realtime Broadcast & Presence (item 132, net-new — no v1/Svelte precedent).
@@ -158,10 +159,22 @@ export function BroadcastPresencePanel() {
         </div>
       </div>
 
-      <div className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-text-light">
-        Purely in-memory and ephemeral — a server restart drops all state. Subject to this server's Channel Authz policies (item 140) for{' '}
-        <code>{topic}</code>. Presence membership on this topic lasts exactly as long as this tab's SSE connections stay open.
-      </div>
+      <PanelHelp
+        summary="A live pub/sub + presence test client — broadcast messages on a topic and see who's currently connected."
+        what={
+          <>
+            Connect to a topic to open its broadcast + presence SSE streams. <strong>Broadcast</strong> is fan-out messaging;{' '}
+            <strong>Presence</strong> tracks who's on the channel with a live join/leave/update map. Purely in-memory and ephemeral — a
+            server restart drops all state. Subject to this server's Channel Authz policies (item 140) for <code>{topic}</code>; presence
+            lasts exactly as long as this tab's SSE connections stay open.
+          </>
+        }
+        actions={[
+          'Connect a topic, then publish a broadcast message and watch it arrive',
+          'Open a second browser tab, Track presence, and watch both maps update on join/leave',
+        ]}
+        routes={['/realtime/broadcast/publish', '/realtime/broadcast/subscribe', '/realtime/presence/*']}
+      />
 
       {connError && <p className="m-0 text-sm text-error">{connError}</p>}
       {!connected && <p className="m-0 text-sm text-text-light">Not connected — click Connect to open the broadcast + presence SSE streams for this topic.</p>}

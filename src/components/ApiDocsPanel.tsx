@@ -4,6 +4,7 @@ import { getRestOpenApi, restRequest, BASE_URL } from '@/lib/engine/api.js';
 import { DataGrid, type DataGridResult } from './DataGrid';
 import { Textarea } from './ui/textarea';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 import type { CatalogError } from '@/hooks/useCatalog';
 
@@ -194,6 +195,24 @@ export function ApiDocsPanel() {
       </div>
 
       <div className="flex flex-1 flex-col gap-3.5 overflow-y-auto">
+        <PanelHelp
+          summary="A live OpenAPI 3 view of the auto-generated REST API, plus a request explorer."
+          what={
+            <>
+              Generated from the engine's own <code>GET /rest/v1</code> document — pick a table on the left to see its endpoints and copy curl
+              snippets. The explorer runs real <code>GET/POST/PATCH/DELETE</code> against <code>/rest/v1/&lt;table&gt;</code> with{' '}
+              <code>select=</code> + embedded FK expansion, filter operators
+              (<code>eq/neq/gt/gte/lt/lte/like/ilike/in/is</code>), <code>order=</code>/<code>limit</code>/<code>offset</code>, and{' '}
+              <code>Prefer: count=exact</code> / <code>return=representation</code> (real <code>Content-Range</code> headers shown). Same
+              RLS/grant enforcement as <code>/sql</code>.
+            </>
+          }
+          actions={[
+            'Pick a table, then run a GET with a filter like status=eq.paid&limit=5',
+            'Add Prefer: count=exact and read the Content-Range response header',
+          ]}
+          routes={['GET /rest/v1', 'GET/POST/PATCH/DELETE /rest/v1/{table}']}
+        />
         {selectedTable && (
           <>
             <div>

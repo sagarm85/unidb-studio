@@ -5,6 +5,7 @@ import { listChannelPolicies, putChannelPolicy, deleteChannelPolicy, runSql, RES
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 import type { CatalogError } from '@/hooks/useCatalog';
 
@@ -147,11 +148,22 @@ export function RealtimeAuthzPanel() {
         </div>
       </div>
 
-      <div className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs leading-relaxed text-text-light">
-        Any authenticated caller may publish/subscribe/track on a topic with <strong>no matching policy</strong> — the default posture unless the server sets{' '}
-        <code>UNIDB_REALTIME_REQUIRE_AUTHZ=1</code> (fail-closed instead). This is a server-process env var with no read API, so its live value isn't shown
-        here — only documented. <code>service_role</code>/superuser bypass all policies (audited server-side).
-      </div>
+      <PanelHelp
+        summary="Control who may subscribe to / publish on each realtime channel — row-level security, but for live channels."
+        what={
+          <>
+            Channel authorization policies, enforced by the same auth engine as row-level RLS. Any authenticated caller may
+            publish/subscribe/track on a topic with <strong>no matching policy</strong> — the default posture unless the server sets{' '}
+            <code>UNIDB_REALTIME_REQUIRE_AUTHZ=1</code> (fail-closed instead). That's a server-process env var with no read API, so its live
+            value is documented, not shown here. <code>service_role</code> / superuser bypass all policies (audited server-side).
+          </>
+        }
+        actions={[
+          'New policy → a channel pattern plus the roles / USING predicate allowed to use it',
+          'Pair with Broadcast & Presence: a blocked subscriber simply gets no stream',
+        ]}
+        routes={['GET /realtime/policies', 'POST /realtime/policies', 'DELETE /realtime/policies/{id}']}
+      />
 
       {error && <ErrorBox error={error} />}
 

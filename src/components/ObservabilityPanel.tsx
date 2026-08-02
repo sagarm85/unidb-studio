@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Info } from 'lucide-react';
 import { getStats, getStatsHistory } from '@/lib/engine/api.js';
 import { formatMicros, formatCount, formatDuration } from '@/lib/engine/format.js';
 import { subscribeQueryHistory, getQueryHistory, clearQueryHistory } from '@/lib/engine/queryStore.js';
@@ -177,23 +177,23 @@ export function ObservabilityPanel() {
           subTab === 'overview' ? (
             <>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2.5">
-                <Kpi label="Total queries" value={formatCount(totalQueries)} />
-                <Kpi label="Slow queries" value={String(slowCount)} tone={slowCount > 0 ? 'warn' : undefined} />
-                <Kpi label="Cache hit rate" value={hitRatio} tone="brand" />
-                <Kpi label="Active txns" value={formatCount(stats.active_transactions)} />
-                <Kpi label="Deadlocks" value={formatCount(locks?.deadlocks)} tone={locks?.deadlocks > 0 ? 'bad' : undefined} />
-                <Kpi label="Vacuum horizon" value={formatDuration(horizon)} tone={horizonLevel === 'ok' ? undefined : (horizonLevel as 'warn' | 'bad')} />
+                <Kpi label="Total queries" value={formatCount(totalQueries)} info="Cumulative statements the engine has executed since startup, across all query kinds." />
+                <Kpi label="Slow queries" value={String(slowCount)} tone={slowCount > 0 ? 'warn' : undefined} info="Statements that exceeded the slow-query threshold (UNIDB_SLOW_QUERY_MS). Stays 0 while the threshold is unset." />
+                <Kpi label="Cache hit rate" value={hitRatio} tone="brand" info="Share of page reads served from the buffer pool without touching disk. Higher is better." />
+                <Kpi label="Active txns" value={formatCount(stats.active_transactions)} info="Transactions currently open (in-flight) — not yet committed or aborted." />
+                <Kpi label="Deadlocks" value={formatCount(locks?.deadlocks)} tone={locks?.deadlocks > 0 ? 'bad' : undefined} info="Cumulative deadlocks the engine detected and broke by aborting a victim transaction." />
+                <Kpi label="Vacuum horizon" value={formatDuration(horizon)} tone={horizonLevel === 'ok' ? undefined : (horizonLevel as 'warn' | 'bad')} info="Age of the oldest snapshot still pinning dead row-versions from cleanup. A large value means a long-running transaction is holding vacuum back." />
               </div>
 
               <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3.5">
-                <MetricChart points={toSeries('activeTxns')} label="Active transactions" unit="count" fmt={(v) => v?.toFixed(0) ?? '—'} />
-                <MetricChart points={toSeries('hitRatio')} label="Cache hit rate" unit="%" fmt={fmtPct} />
-                <MetricChart points={toSeries('commitsPerSec')} label="Commits / sec" unit="txn/s" fmt={fmtRate} />
-                <MetricChart points={toSeries('walBytesPerSec')} label="WAL throughput" unit="bytes/s" fmt={fmtBytes} />
+                <MetricChart points={toSeries('activeTxns')} label="Active transactions" unit="count" fmt={(v) => v?.toFixed(0) ?? '—'} info="In-flight transaction count sampled over time — spikes under concurrent load." />
+                <MetricChart points={toSeries('hitRatio')} label="Cache hit rate" unit="%" fmt={fmtPct} info="Buffer-pool hit ratio over time (% of page reads served from memory instead of disk)." />
+                <MetricChart points={toSeries('commitsPerSec')} label="Commits / sec" unit="txn/s" fmt={fmtRate} info="Committed transactions per second — your write throughput. Flat on read-only workloads." />
+                <MetricChart points={toSeries('walBytesPerSec')} label="WAL throughput" unit="bytes/s" fmt={fmtBytes} info="Bytes per second appended to the write-ahead log. Spikes on writes, flat on reads." />
               </div>
 
               <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
-                <Card title="Throughput">
+                <Card title="Throughput" info="Cumulative commit / abort / checkpoint / autovacuum counters since the engine started.">
                   <Dl>
                     <Dt>Commits</Dt>
                     <Dd>{formatCount(stats.commits)}</Dd>
@@ -206,7 +206,7 @@ export function ObservabilityPanel() {
                   </Dl>
                 </Card>
 
-                <Card title="Sessions">
+                <Card title="Sessions" info="Open HTTP transaction sessions and result cursors, plus aborts triggered by the idle-session reaper.">
                   <Dl>
                     <Dt>Open txn sessions</Dt>
                     <Dd>{formatCount(stats.open_txn_sessions)}</Dd>
@@ -218,7 +218,7 @@ export function ObservabilityPanel() {
                 </Card>
 
                 {bp && (
-                  <Card title="Buffer pool">
+                  <Card title="Buffer pool" info="Page-cache effectiveness: hit ratio, hits, misses, and evictions from the buffer pool.">
                     <Dl>
                       <Dt>Hit ratio</Dt>
                       <Dd className="font-bold text-brand">{hitRatio}</Dd>
@@ -233,7 +233,7 @@ export function ObservabilityPanel() {
                 )}
 
                 {locks && (
-                  <Card title="Contention">
+                  <Card title="Contention" info="Lock contention: lock waits, deadlocks, and lock-wait latency percentiles (p50 / p99).">
                     <Dl>
                       <Dt>Lock waits</Dt>
                       <Dd>{formatCount(locks.waits)}</Dd>
@@ -247,7 +247,7 @@ export function ObservabilityPanel() {
                   </Card>
                 )}
 
-                <Card title="WAL / Durability">
+                <Card title="WAL / Durability" info="Write-ahead-log volume, fsync counts, and group-commit batching behavior.">
                   <Dl>
                     <Dt>fsyncs</Dt>
                     <Dd>{formatCount(stats.wal_fsyncs)}</Dd>
@@ -261,7 +261,7 @@ export function ObservabilityPanel() {
                 </Card>
 
                 {workers && (
-                  <Card title="Parallel workers">
+                  <Card title="Parallel workers" info="Parallel-scan worker pool: total budget, currently available workers, active scans, and serial fallbacks when none are free.">
                     <Dl>
                       <Dt>Budget</Dt>
                       <Dd>{formatCount(workers.global_max)}</Dd>
@@ -428,7 +428,15 @@ export function ObservabilityPanel() {
   );
 }
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'warn' | 'bad' | 'brand' }) {
+function InfoDot({ text }: { text: string }) {
+  return (
+    <span title={text} aria-label={text} className="cursor-help text-text-faint hover:text-text-light">
+      <Info className="size-3" />
+    </span>
+  );
+}
+
+function Kpi({ label, value, tone, info }: { label: string; value: string; tone?: 'warn' | 'bad' | 'brand'; info?: string }) {
   return (
     <div
       className={cn(
@@ -437,16 +445,22 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'war
         tone === 'bad' && 'border-error/50 bg-error-subtle',
       )}
     >
-      <span className="text-xs font-semibold tracking-wide text-text-muted uppercase">{label}</span>
+      <span className="flex items-center gap-1 text-xs font-semibold tracking-wide text-text-muted uppercase">
+        {label}
+        {info && <InfoDot text={info} />}
+      </span>
       <span className={cn('font-mono text-2xl leading-none font-bold', tone === 'brand' && 'text-brand')}>{value}</span>
     </div>
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({ title, children, info }: { title: string; children: React.ReactNode; info?: string }) {
   return (
     <section className="rounded-lg border border-border bg-card p-3.5">
-      <h4 className="m-0 mb-2.5 text-md font-semibold">{title}</h4>
+      <h4 className="m-0 mb-2.5 flex items-center gap-1 text-md font-semibold">
+        {title}
+        {info && <InfoDot text={info} />}
+      </h4>
       {children}
     </section>
   );

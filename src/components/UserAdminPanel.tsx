@@ -6,6 +6,7 @@ import { Badge } from './ui/badge';
 import { Textarea } from './ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 import type { CatalogError } from '@/hooks/useCatalog';
 
@@ -231,6 +232,23 @@ export function UserAdminPanel() {
           </button>
         </div>
       </div>
+
+      <PanelHelp
+        summary="Superuser console to create and manage user accounts."
+        what={
+          <>
+            Create users with or without a password (passwordless = OAuth/magic-link only), toggle <strong>Superuser</strong> and{' '}
+            <strong>Banned</strong>, and edit two metadata blobs: <code>app_metadata</code> (admin-controlled, trusted — readable in RLS via{' '}
+            <code>auth.jwt() -&gt;&gt; 'claim'</code>) vs <code>user_metadata</code> (user-editable profile). Banning blocks login/refresh
+            (<code>403 USER_BANNED</code>) and revokes the user's sessions — disable without deleting. Superuser-only.
+          </>
+        }
+        actions={[
+          'New user → username, optional password, role/superuser/banned, metadata',
+          'Ban / unban or flip superuser on an existing user',
+        ]}
+        routes={['GET /auth/admin/users', 'POST /auth/admin/users', 'PATCH /auth/admin/users/{id}', 'DELETE /auth/admin/users/{id}']}
+      />
 
       {error && <ErrorBox error={error} />}
 

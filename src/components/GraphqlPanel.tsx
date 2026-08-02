@@ -3,6 +3,7 @@ import { Network, Play } from 'lucide-react';
 import { getGraphqlSchema, graphqlRequest } from '@/lib/engine/api.js';
 import { Badge } from './ui/badge';
 import { Textarea } from './ui/textarea';
+import { PanelHelp } from './PanelHelp';
 import { cn } from '@/lib/utils';
 
 // GraphQL panel (item 130 C4, mutations item 133) — a schema browser over a
@@ -103,7 +104,21 @@ export function GraphqlPanel() {
     const t = tableTypeForField(f);
     const scalarFields = (t?.fields ?? []).filter((ff) => isScalarish(ff.type)).slice(0, 5);
     const cols = scalarFields.length ? scalarFields.map((ff) => `    ${ff.name}`).join('\n') : '    __typename';
-    setQuery(`query {\n  ${f.name} {\n${cols}\n  }\n}`);
+    // Scaffold an example filter/order/limit clause, but only from args the
+    // field actually exposes (engine-truthful — never invent an argument).
+    const argNames = new Set(f.args.map((a) => a.name));
+    const parts: string[] = [];
+    // Bare column name = equality (the /rest/v1-parity filter matrix). Use the
+    // first scalar column that's also a filter arg, with a placeholder value.
+    const eqCol = scalarFields.find((ff) => argNames.has(ff.name));
+    if (eqCol) {
+      const v = placeholderFor(eqCol.type);
+      parts.push(`${eqCol.name}: ${typeof v === 'string' ? `"${v}"` : v}`);
+    }
+    if (argNames.has('orderBy') && scalarFields[0]) parts.push(`orderBy: "${scalarFields[0].name}"`);
+    if (argNames.has('limit')) parts.push('limit: 5');
+    const argClause = parts.length ? `(${parts.join(', ')})` : '';
+    setQuery(`query {\n  ${f.name}${argClause} {\n${cols}\n  }\n}`);
   }
   function starterForInsert(f: GqlField) {
     const t = tableTypeForMutation(f.name, 'insert_');
@@ -232,6 +247,26 @@ export function GraphqlPanel() {
       </div>
 
       <div className="flex flex-1 flex-col gap-3">
+        <PanelHelp
+          summary="A GraphQL API auto-generated from your schema — plus graph traversal and vector search a relational-only GraphQL can't do."
+          what={
+            <>
+              The schema on the left is a live introspection of <code>POST /graphql</code>: a <code>Query</code> root plus{' '}
+              <code>insert_/update_/delete_&lt;table&gt;</code> mutation roots. Every resolver runs the <strong>same enforced SQL path</strong> as{' '}
+              <code>/rest/v1</code> and <code>/sql</code>, so RLS / <code>WITH CHECK</code> / column grants apply identically. Root fields take
+              the same <strong>filter matrix</strong> as <code>/rest/v1</code>: equality is the bare column
+              (<code>country: "DE"</code>), plus <code>_neq/_gt/_gte/_lt/_lte/_like/_ilike/_in/_is_null</code> suffixes, and{' '}
+              <code>orderBy</code>/<code>limit</code>/<code>offset</code> (nested relations too). Two things a pg_graphql-style stack can't do:{' '}
+              <code>edges(type, direction)</code> graph traversal and root <code>near_&lt;table&gt;(vector, k)</code> vector similarity.
+            </>
+          }
+          actions={[
+            'Click a field on the left to scaffold a query, then Run it',
+            'Filter it: { customers(country: "DE", orderBy: "id", limit: 3) { id city } }',
+            'Try an insert_/update_/delete_ mutation and read the real {data, errors} envelope',
+          ]}
+          routes={['POST /graphql']}
+        />
         {selectedField && (
           <div className="rounded-md border border-border bg-secondary/40 p-2 font-mono text-sm">
             <span className="font-semibold">{selectedField.name}</span>
