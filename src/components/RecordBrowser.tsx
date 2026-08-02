@@ -3,6 +3,7 @@ import { runSql } from '@/lib/engine/api.js';
 import { quoteIdent, isVectorType, bindForColumn } from '@/lib/engine/format.js';
 import { DataGrid, type DataGridResult, type HeaderMeta } from './DataGrid';
 import { ErrorBox } from './ErrorBox';
+import { PanelHelp } from './PanelHelp';
 import {
   Dialog,
   DialogContent,
@@ -470,6 +471,18 @@ export function RecordBrowser({
 
   return (
     <div className="flex flex-col gap-3">
+      <PanelHelp
+        summary="Browse, filter, sort, and edit any table's rows — the spreadsheet view of your data."
+        what={
+          <>
+            Page through rows (keyset pagination when the table has a key, else <code>LIMIT</code>/<code>OFFSET</code>), filter and sort by
+            column, inline-edit a cell, insert/delete rows, and export CSV. Every read goes through the same authenticated REST path your app
+            uses, so RLS and grants apply to whoever you're signed in as — switch users and the visible rows change.
+          </>
+        }
+        actions={['Filter by a column value; click a header to sort', 'Double-click a cell to edit; use Export for CSV']}
+        routes={['GET /tables/{t}/rows', 'POST /sql']}
+      />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-3">
           <strong className="font-mono text-lg font-medium">{table?.name}</strong>
