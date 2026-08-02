@@ -15,6 +15,12 @@ import {
   Moon,
   Palette,
   Shield,
+  FileCode,
+  UserCog,
+  Webhook,
+  Radio,
+  Clock3,
+  Share2,
 } from 'lucide-react';
 import { BASE_URL, IS_CONFIGURED, runSql } from '@/lib/engine/api.js';
 import { quoteIdent } from '@/lib/engine/format.js';
@@ -35,6 +41,13 @@ import { ObservabilityPanel } from '@/components/ObservabilityPanel';
 import { LogsPanel } from '@/components/LogsPanel';
 import { ComparePanel } from '@/components/ComparePanel';
 import { AuthPanel } from '@/components/AuthPanel';
+import { ApiDocsPanel } from '@/components/ApiDocsPanel';
+import { GraphqlPanel } from '@/components/GraphqlPanel';
+import { UserAdminPanel } from '@/components/UserAdminPanel';
+import { WebhooksPanel } from '@/components/WebhooksPanel';
+import { RealtimeAuthzPanel } from '@/components/RealtimeAuthzPanel';
+import { CronJobsPanel } from '@/components/CronJobsPanel';
+import { BroadcastPresencePanel } from '@/components/BroadcastPresencePanel';
 import { Overview } from '@/screens/Overview';
 import { Toaster } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
@@ -48,6 +61,13 @@ type Tab =
   | 'storage'
   | 'events'
   | 'auth'
+  | 'apidocs'
+  | 'graphql'
+  | 'useradmin'
+  | 'webhooks'
+  | 'realtimeauthz'
+  | 'cron'
+  | 'broadcast'
   | 'observability'
   | 'logs'
   | 'compare';
@@ -61,6 +81,13 @@ const VALID_TABS = new Set<Tab>([
   'storage',
   'events',
   'auth',
+  'apidocs',
+  'graphql',
+  'useradmin',
+  'webhooks',
+  'realtimeauthz',
+  'cron',
+  'broadcast',
   'observability',
   'logs',
   'compare',
@@ -85,6 +112,16 @@ const PLATFORM_ITEMS: NavItem[] = [
   { tab: 'storage', label: 'Storage', icon: HardDrive },
   { tab: 'events', label: 'Events', icon: Zap },
   { tab: 'auth', label: 'Auth', icon: Shield },
+  { tab: 'useradmin', label: 'Users', icon: UserCog },
+  { tab: 'webhooks', label: 'Webhooks', icon: Webhook },
+  { tab: 'realtimeauthz', label: 'Channel Authz', icon: Radio },
+  { tab: 'broadcast', label: 'Broadcast & Presence', icon: Radio },
+  { tab: 'cron', label: 'Scheduled Jobs', icon: Clock3 },
+];
+
+const API_ITEMS: NavItem[] = [
+  { tab: 'apidocs', label: 'API Docs', icon: FileCode },
+  { tab: 'graphql', label: 'GraphQL', icon: Share2 },
 ];
 
 const MONITOR_ITEMS: NavItem[] = [
@@ -285,6 +322,10 @@ export default function App() {
 
           <div className="mx-2 my-3 h-px bg-border-muted" />
 
+          <NavGroup label="API" items={API_ITEMS} tab={tab} setTab={setTab} />
+
+          <div className="mx-2 my-3 h-px bg-border-muted" />
+
           <NavGroup label="Monitor" items={MONITOR_ITEMS} tab={tab} setTab={setTab} />
         </nav>
 
@@ -312,7 +353,22 @@ export default function App() {
                 <code>VITE_UNIDB_URL</code> and <code>VITE_UNIDB_TOKEN</code>, then restart <code>npm run dev</code>.
               </div>
             )}
-            <section className={cn('flex flex-1 flex-col', tab === 'overview' || tab === 'storage' ? 'overflow-hidden' : 'overflow-auto p-4')}>
+            <section
+              className={cn(
+                'flex flex-1 flex-col',
+                tab === 'overview' ||
+                  tab === 'storage' ||
+                  tab === 'apidocs' ||
+                  tab === 'graphql' ||
+                  tab === 'useradmin' ||
+                  tab === 'webhooks' ||
+                  tab === 'realtimeauthz' ||
+                  tab === 'cron' ||
+                  tab === 'broadcast'
+                  ? 'overflow-hidden'
+                  : 'overflow-auto p-4',
+              )}
+            >
               {tab === 'overview' ? (
                 <Overview
                   tables={catalog.tables}
@@ -350,6 +406,20 @@ export default function App() {
                 <EventsPanel tables={catalog.tables} />
               ) : tab === 'auth' ? (
                 <AuthPanel tables={catalog.tables} />
+              ) : tab === 'apidocs' ? (
+                <ApiDocsPanel />
+              ) : tab === 'graphql' ? (
+                <GraphqlPanel />
+              ) : tab === 'useradmin' ? (
+                <UserAdminPanel />
+              ) : tab === 'webhooks' ? (
+                <WebhooksPanel tables={catalog.tables} />
+              ) : tab === 'realtimeauthz' ? (
+                <RealtimeAuthzPanel />
+              ) : tab === 'cron' ? (
+                <CronJobsPanel />
+              ) : tab === 'broadcast' ? (
+                <BroadcastPresencePanel />
               ) : tab === 'observability' ? (
                 <ObservabilityPanel />
               ) : tab === 'logs' ? (
