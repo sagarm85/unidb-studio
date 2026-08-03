@@ -1538,6 +1538,79 @@ export async function deleteCronJob(name) {
   if (!res.ok) throw await toApiError(res);
 }
 
+// ── Stored functions & RPC (item 147) ─────────────────────────────────────
+// A stored function is a named, parameterized list of SQL statements the
+// engine runs in ONE transaction. Admin surface (GET/POST/DELETE /functions)
+// is superuser-only; the call route POST /rest/v1/rpc/{fn} is callable by any
+// authenticated principal, governed by the function's invoker/run_as identity.
+// The control-plane routes are strictly a caller of the same execute_sql path.
+
+/** GET /functions — list every registered function (body included). Superuser-only.
+ *  404 → server predates item 147 (supported:false, no fabricated data). */
+export async function listFunctions() {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/functions`, { headers: authHeaders() });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (res.status === 404) return { supported: false, functions: [] };
+  if (!res.ok) throw await toApiError(res);
+  return { supported: true, functions: await res.json() };
+}
+
+/** POST /functions — create/upsert by name. Superuser-only. 204 No Content.
+ *  payload: { name, params?: string[], body: string[], run_as?: string|null } */
+export async function upsertFunction(payload) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/functions`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** DELETE /functions/{name} — idempotent; deleting an unknown name is a no-op. */
+export async function deleteFunction(name) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/functions/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+}
+
+/** POST /rest/v1/rpc/{fn} — call a registered function. `args` is either a
+ *  JSON object of named args or a JSON array of positional args. Returns the
+ *  last statement's result in the same per-statement shape POST /sql returns. */
+export async function callRpc(fn, args) {
+  if (!IS_CONFIGURED) throw transportError(new Error('unconfigured'));
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/rest/v1/rpc/${encodeURIComponent(fn)}`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(args ?? {}),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
 // ── Realtime Broadcast & Presence (item 132) ──────────────────────────────
 // Purely in-memory and ephemeral — no WAL/heap/catalog involvement, a
 // server restart drops all state. Transport is SSE (same technique as
