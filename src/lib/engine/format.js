@@ -23,7 +23,23 @@ export function formatCell(value, type = null) {
     return formatVector(value);
   }
   if (typeof value === 'object') return JSON.stringify(value);
+  if (typeof value === 'number') return trimFloatNoise(value);
   return String(value);
+}
+
+// Trim IEEE-754 accumulation noise from a number for display only, without
+// touching legitimate precision. The engine's SUM/AVG accumulate in f64, so
+// aggregate results arrive as e.g. 41565.849999999984 or 272.9507692307692.
+// We only reformat numbers whose fractional part is implausibly long (> 10
+// digits) — the signature of float drift — via a 12-significant-digit
+// round-trip; clean values (149.97, ids, short decimals) pass through unchanged.
+export function trimFloatNoise(n) {
+  if (!Number.isFinite(n) || Number.isInteger(n)) return String(n);
+  const s = String(n);
+  if (s.includes('e') || s.includes('E')) return s; // leave exponential form alone
+  const frac = s.split('.')[1];
+  if (!frac || frac.length <= 10) return s;
+  return String(Number.parseFloat(n.toPrecision(12)));
 }
 
 // Compact vector preview: first `head` dims, an ellipsis if truncated, then the

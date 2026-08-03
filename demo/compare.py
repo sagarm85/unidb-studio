@@ -168,29 +168,29 @@ SCHEMA_DDL = [
       phone TEXT, city TEXT, country TEXT, created_at TIMESTAMP NOT NULL)"""),
     ("products", """CREATE TABLE products (
       id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
-      price REAL NOT NULL, stock_qty INTEGER NOT NULL,
+      price DECIMAL(10,2) NOT NULL, stock_qty INTEGER NOT NULL,
       sku TEXT NOT NULL, created_at TIMESTAMP NOT NULL)"""),
     ("orders", """CREATE TABLE orders (
       id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL,
-      status TEXT NOT NULL, total_amount REAL NOT NULL,
+      status TEXT NOT NULL, total_amount DECIMAL(10,2) NOT NULL,
       created_at TIMESTAMP NOT NULL,
       FOREIGN KEY (customer_id) REFERENCES customers(id))"""),
     ("order_items", """CREATE TABLE order_items (
       id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL, qty INTEGER NOT NULL,
-      unit_price REAL NOT NULL, line_total REAL NOT NULL,
+      unit_price DECIMAL(10,2) NOT NULL, line_total DECIMAL(10,2) NOT NULL,
       FOREIGN KEY (order_id)   REFERENCES orders(id),
       FOREIGN KEY (product_id) REFERENCES products(id))"""),
     ("invoices", """CREATE TABLE invoices (
       id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,
       invoice_number TEXT NOT NULL, issued_at TIMESTAMP NOT NULL,
-      due_at TIMESTAMP NOT NULL, paid_at TIMESTAMP, total_amount REAL NOT NULL,
+      due_at TIMESTAMP NOT NULL, paid_at TIMESTAMP, total_amount DECIMAL(10,2) NOT NULL,
       status TEXT NOT NULL,
       FOREIGN KEY (order_id) REFERENCES orders(id))"""),
     ("invoice_items", """CREATE TABLE invoice_items (
       id INTEGER PRIMARY KEY, invoice_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL, description TEXT NOT NULL,
-      qty INTEGER NOT NULL, unit_price REAL NOT NULL, line_total REAL NOT NULL,
+      qty INTEGER NOT NULL, unit_price DECIMAL(10,2) NOT NULL, line_total DECIMAL(10,2) NOT NULL,
       FOREIGN KEY (invoice_id) REFERENCES invoices(id),
       FOREIGN KEY (product_id) REFERENCES products(id))"""),
 ]

@@ -376,10 +376,6 @@ export function EventsPanel({ tables = [] }: { tables?: CatalogTable[] }) {
               })}
             </tbody>
           </table>
-          <div className="rounded-md border border-border bg-secondary px-3.5 py-2.5 text-sm leading-relaxed text-text-light">
-            <strong className="text-foreground">Database-level CDC</strong> is not supported — enable per table above, or run{' '}
-            <code>python3 demo/events_demo.py</code> which enables CDC on <code>orders</code> automatically.
-          </div>
         </>
       )}
 
