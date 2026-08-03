@@ -15,21 +15,32 @@ interface DoneStats {
   rowsPerSec: number;
 }
 
-// A SQL literal for a cell: empty string -> NULL, otherwise a single-quoted
-// string (quotes doubled). The engine coerces the string to each column's
-// real type. Values are quoted, not bound as params, because batching here
-// means many `;`-separated statements in ONE /sql body (the documented way
-// to run them in a single transaction), and $n numbering across statements
-// isn't part of the documented contract.
-function lit(v: string | null | undefined) {
-  if (v === '' || v === null || v === undefined) return 'NULL';
-  return `'${String(v).replace(/'/g, "''")}'`;
+const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
+function isNumericType(t: string | undefined): boolean {
+  return !!t && /^(int|integer|bigint|smallint|tinyint|serial|float|double|real|decimal|numeric)/i.test(t.trim());
 }
 
-function buildBatch(tableName: string, cols: string[], batchRows: string[][]) {
+// A SQL literal for a cell. Empty -> NULL. The engine's write path is STRICT
+// (it will NOT coerce a quoted string into a numeric column — a quoted '5' into
+// an INTEGER column errors "expected Int64, got Text"), so emit a BARE literal
+// for numeric target columns and a single-quoted string (quotes doubled) for
+// everything else. Values are quoted, not bound as params, because batching
+// here means many `;`-separated statements in ONE /sql body (the documented
+// way to run them in a single transaction), and $n numbering across statements
+// isn't part of the documented contract.
+function lit(v: string | null | undefined, type?: string) {
+  if (v === '' || v === null || v === undefined) return 'NULL';
+  const s = String(v);
+  if (isNumericType(type) && NUMERIC_RE.test(s.trim())) return s.trim();
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+function buildBatch(tableName: string, cols: string[], batchRows: string[][], colTypes: (string | undefined)[]) {
   const t = quoteIdent(tableName);
   const colList = cols.map(quoteIdent).join(', ');
-  return batchRows.map((r) => `INSERT INTO ${t} (${colList}) VALUES (${cols.map((_, i) => lit(r[i])).join(', ')})`).join('; ');
+  return batchRows
+    .map((r) => `INSERT INTO ${t} (${colList}) VALUES (${cols.map((_, i) => lit(r[i], colTypes[i])).join(', ')})`)
+    .join('; ');
 }
 
 export function CsvUpload({ tables = [] }: { tables?: CatalogTable[] }) {
@@ -84,10 +95,15 @@ export function CsvUpload({ tables = [] }: { tables?: CatalogTable[] }) {
     const size = Math.max(1, Number(batchSize) || 1);
     const start = performance.now();
 
+    // Resolve each CSV column's target type so numeric columns get bare
+    // literals (the write path won't coerce quoted strings — see lit()).
+    const target = tables.find((t) => t.name === targetTable);
+    const colTypes = headers.map((h) => target?.columns?.find((c) => c.name === h)?.type);
+
     try {
       for (let i = 0; i < rows.length; i += size) {
         const batch = rows.slice(i, i + size);
-        const sql = buildBatch(targetTable, headers, batch);
+        const sql = buildBatch(targetTable, headers, batch, colTypes);
         const { results } = await runSql(sql);
         for (const r of results) if (r.type === 'inserted') inserted += r.count ?? 0;
         setProgress(Math.min(i + size, rows.length));
