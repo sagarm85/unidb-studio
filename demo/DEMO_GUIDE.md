@@ -159,6 +159,21 @@ exactly what it should.
 
 ---
 
+### Step 5c — Seed the platform panels (webhooks, channel authz, cron)
+
+So Webhooks, Channel Authz, and Scheduled Jobs aren't empty during the demo:
+
+```bash
+python3 demo/seed_platform.py
+```
+
+Registers three webhooks, three realtime channel policies, and three cron jobs
+(all superuser-gated). Cron jobs are registered only — their SQL runs at the
+scheduled time, not now. Broadcast & Presence stays a live test client (connect a
+topic in the UI to see it work).
+
+---
+
 ### Step 6 — Load vector + document data
 
 ```bash
@@ -548,16 +563,19 @@ this chart."
    - `ord_ops_pending` — `orders` `FOR UPDATE TO ops USING (status = 'pending')`
      (write-side RLS: ops can only edit still-pending orders)
 
-   Then create one **live**:
+   Each policy row shows a **role chip** for the role it's scoped to (`analytics`,
+   `support`, `ops`) — or "all roles" when unscoped. Then create one **live** with
+   **New Policy**: name it, pick a table and command, tick one or more roles in the
+   **Apply to roles** picker (the `TO` clause), and write the `USING` predicate —
+   the SQL preview updates as you go:
    ```sql
    CREATE POLICY cust_self ON customers
-     FOR SELECT TO authenticated
-     USING (country = auth.jwt() ->> 'country');
+     FOR SELECT TO support
+     USING (country = 'DE');
    ```
-   The helper buttons insert `current_user`, `auth.uid()`, and
-   `auth.jwt() ->> 'claim'` (always parenthesised).
    > unidb RLS predicates are a **single AND-only comparison** — `IN(...)`/`OR`
    > aren't supported, so scope to one value (e.g. `country = 'DE'`), not a set.
+   > Leaving the role picker empty omits `TO` and applies the policy to every role.
 
 3. **Preview** — `POST /auth/preview`: pick a user/role and run a query **as
    them**, seeing the RLS-filtered result — no impersonation token needed.
@@ -777,6 +795,7 @@ superuser `dev` — no token change needed.
 |--------|---------|
 | `unified_txn_demo.py` | **Scene 0** — one atomic txn across relational + vector + graph + event, plus the rollback proof (self-contained; needs `dev` superuser) |
 | `seed_auth.py` | **Step 5b** — 3 demo users + roles + grants + 3 RLS policies so Auth / Preview / Switch-user differ visibly (needs the e-commerce seed + `dev` superuser). Run it **last** — `compare.py` wipes its policies. |
+| `seed_platform.py` | **Step 5c** — 3 webhooks + 3 channel-authz policies + 3 cron jobs so those Platform panels show live data (needs `dev` superuser) |
 | `invoices_1k.csv` | Data asset (not a script) — 1,000 invoice rows for the **CSV Import** tab; import into `invoices` |
 | `setup_schema.py` | Drop + recreate 6 tables with FK constraints |
 | `seed.py --size N` | Bulk-insert e-commerce data |

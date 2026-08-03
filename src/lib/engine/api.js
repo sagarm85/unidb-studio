@@ -1372,7 +1372,15 @@ export async function listChannelPolicies() {
   }
   if (res.status === 404) return { supported: false, policies: [] };
   if (!res.ok) throw await toApiError(res);
-  return { supported: true, policies: await res.json() };
+  // The engine returns each policy's roles under `roles`; the panel reads
+  // `allowed_roles`. Normalize here (the wire-contract layer) so a non-empty
+  // list can't crash the panel on `p.allowed_roles.map`.
+  const raw = await res.json();
+  const policies = (Array.isArray(raw) ? raw : []).map((p) => ({
+    ...p,
+    allowed_roles: p.allowed_roles ?? p.roles ?? [],
+  }));
+  return { supported: true, policies };
 }
 
 /** PUT /realtime/policies — upsert, replacing the role set. operation is publish|subscribe|presence|all. */
