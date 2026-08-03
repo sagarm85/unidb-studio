@@ -26,6 +26,9 @@ export function TableActions({
   const [busy, setBusy] = useState(false);
 
   const [newCol, setNewCol] = useState({ name: '', type: 'TEXT', notNull: false });
+  // When true, the type is entered free-text (for parameterized types the fixed
+  // list doesn't cover, e.g. VECTOR(384), DECIMAL(12,4), VARCHAR(64)).
+  const [customType, setCustomType] = useState(false);
   const [idxCol, setIdxCol] = useState('');
   const [idxKind, setIdxKind] = useState('BTREE');
   const [dropConfirm, setDropConfirm] = useState<{ kind: 'column' | 'table'; name: string } | null>(null);
@@ -52,6 +55,7 @@ export function TableActions({
     const nn = newCol.notNull ? ' NOT NULL' : '';
     run(`ALTER TABLE ${quoteIdent(table.name)} ADD COLUMN ${quoteIdent(n)} ${newCol.type.trim()}${nn}`, () => {
       setNewCol({ name: '', type: 'TEXT', notNull: false });
+      setCustomType(false);
     });
   }
   function createIndex() {
@@ -121,19 +125,36 @@ export function TableActions({
                   spellCheck={false}
                   className="h-8 min-w-[90px] flex-1 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
                 />
-                <input
-                  value={newCol.type}
-                  onChange={(e) => setNewCol((n) => ({ ...n, type: e.target.value }))}
-                  list="unidb-types-2"
-                  placeholder="type"
-                  spellCheck={false}
-                  className="h-8 min-w-[90px] flex-1 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
-                />
-                <datalist id="unidb-types-2">
+                <select
+                  value={customType ? '__custom__' : newCol.type}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setCustomType(true);
+                      setNewCol((n) => ({ ...n, type: '' }));
+                    } else {
+                      setCustomType(false);
+                      setNewCol((n) => ({ ...n, type: e.target.value }));
+                    }
+                  }}
+                  className="h-8 min-w-[110px] flex-1 rounded-md border border-border bg-secondary px-2 font-mono text-md"
+                >
                   {TYPES.map((t) => (
-                    <option key={t} value={t} />
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
                   ))}
-                </datalist>
+                  <option value="__custom__">Custom…</option>
+                </select>
+                {customType && (
+                  <input
+                    value={newCol.type}
+                    onChange={(e) => setNewCol((n) => ({ ...n, type: e.target.value }))}
+                    placeholder="e.g. VECTOR(384)"
+                    spellCheck={false}
+                    autoFocus
+                    className="h-8 min-w-[120px] flex-1 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
+                  />
+                )}
                 <label className="inline-flex items-center gap-1 text-sm whitespace-nowrap text-text-light">
                   <input type="checkbox" checked={newCol.notNull} onChange={(e) => setNewCol((n) => ({ ...n, notNull: e.target.checked }))} /> NOT NULL
                 </label>

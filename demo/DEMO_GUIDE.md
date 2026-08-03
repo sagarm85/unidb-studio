@@ -412,7 +412,7 @@ What to say:
 
 ```sql
 INSERT INTO orders (id, customer_id, status, total_amount, created_at)
-VALUES (99999, 1, 'pending', 149.99, 1700000000);
+VALUES (99999, 1, 'pending', 149.99, '2024-01-15 10:30:00');
 
 UPDATE orders SET status = 'shipped' WHERE id = 99999;
 
