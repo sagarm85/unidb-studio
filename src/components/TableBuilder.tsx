@@ -88,23 +88,17 @@ export function TableBuilder({ onSubmit, onClose }: { onSubmit: (sql: string) =>
           </label>
 
           <div className="flex flex-col gap-2">
-            <div className="grid grid-cols-[1fr_1fr_28px_28px_24px] items-center gap-2 text-center text-xs font-semibold text-text-muted">
-              <span className="text-left">Column</span>
-              <span className="text-left">Type</span>
-              <span title="NOT NULL">NN</span>
-              <span title="Primary key">PK</span>
-              <span />
-            </div>
+            <span className="text-xs font-semibold tracking-wide text-text-muted uppercase">Columns</span>
             {cols.map((c, i) => (
-              <div key={i} className="grid grid-cols-[1fr_1fr_28px_28px_24px] items-center gap-2">
+              <div key={i} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border-muted bg-secondary/30 p-2">
                 <input
                   value={c.name}
                   onChange={(e) => updateCol(i, { name: e.target.value })}
-                  placeholder="name"
+                  placeholder="column name"
                   spellCheck={false}
-                  className="h-8 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
+                  className="h-8 min-w-[120px] flex-1 rounded-md border border-border bg-secondary px-2 font-mono text-md outline-none focus-visible:border-border-strong focus-visible:ring-[2px] focus-visible:ring-ring/40"
                 />
-                <div className="flex min-w-0 flex-col gap-1">
+                <div className="flex min-w-[120px] flex-1 flex-col gap-1">
                   <select
                     value={TYPES.includes(c.type) ? c.type : '__custom__'}
                     onChange={(e) => {
@@ -129,9 +123,13 @@ export function TableBuilder({ onSubmit, onClose }: { onSubmit: (sql: string) =>
                     />
                   )}
                 </div>
-                <input type="checkbox" checked={c.notNull} onChange={(e) => updateCol(i, { notNull: e.target.checked })} aria-label="NOT NULL" className="justify-self-center" />
-                <input type="checkbox" checked={c.pk} onChange={(e) => updateCol(i, { pk: e.target.checked })} aria-label="Primary key" className="justify-self-center" />
-                <button className="text-text-muted hover:text-error" title="Remove column" onClick={() => removeCol(i)}>
+                <label className="flex cursor-pointer items-center gap-1.5 text-sm whitespace-nowrap text-text-light">
+                  <input type="checkbox" checked={c.notNull} onChange={(e) => updateCol(i, { notNull: e.target.checked })} /> Not null
+                </label>
+                <label className="flex cursor-pointer items-center gap-1.5 text-sm whitespace-nowrap text-text-light">
+                  <input type="checkbox" checked={c.pk} onChange={(e) => updateCol(i, { pk: e.target.checked })} /> Primary key
+                </label>
+                <button className="ml-auto text-text-muted hover:text-error" title="Remove column" onClick={() => removeCol(i)}>
                   ✕
                 </button>
               </div>

@@ -21,6 +21,7 @@ import {
   Radio,
   Clock3,
   Share2,
+  FunctionSquare,
 } from 'lucide-react';
 import { BASE_URL, IS_CONFIGURED, runSql } from '@/lib/engine/api.js';
 import { quoteIdent } from '@/lib/engine/format.js';
@@ -48,6 +49,7 @@ import { WebhooksPanel } from '@/components/WebhooksPanel';
 import { RealtimeAuthzPanel } from '@/components/RealtimeAuthzPanel';
 import { CronJobsPanel } from '@/components/CronJobsPanel';
 import { BroadcastPresencePanel } from '@/components/BroadcastPresencePanel';
+import { FunctionsPanel } from '@/components/FunctionsPanel';
 import { Overview } from '@/screens/Overview';
 import { Toaster } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
@@ -63,6 +65,7 @@ type Tab =
   | 'auth'
   | 'apidocs'
   | 'graphql'
+  | 'functions'
   | 'useradmin'
   | 'webhooks'
   | 'realtimeauthz'
@@ -83,6 +86,7 @@ const VALID_TABS = new Set<Tab>([
   'auth',
   'apidocs',
   'graphql',
+  'functions',
   'useradmin',
   'webhooks',
   'realtimeauthz',
@@ -122,6 +126,7 @@ const PLATFORM_ITEMS: NavItem[] = [
 const API_ITEMS: NavItem[] = [
   { tab: 'apidocs', label: 'API Docs', icon: FileCode },
   { tab: 'graphql', label: 'GraphQL', icon: Share2 },
+  { tab: 'functions', label: 'Functions', icon: FunctionSquare },
 ];
 
 const MONITOR_ITEMS: NavItem[] = [
@@ -370,6 +375,7 @@ export default function App() {
                   tab === 'storage' ||
                   tab === 'apidocs' ||
                   tab === 'graphql' ||
+                  tab === 'functions' ||
                   tab === 'useradmin' ||
                   tab === 'webhooks' ||
                   tab === 'realtimeauthz' ||
@@ -420,6 +426,8 @@ export default function App() {
                 <ApiDocsPanel />
               ) : tab === 'graphql' ? (
                 <GraphqlPanel />
+              ) : tab === 'functions' ? (
+                <FunctionsPanel />
               ) : tab === 'useradmin' ? (
                 <UserAdminPanel />
               ) : tab === 'webhooks' ? (
