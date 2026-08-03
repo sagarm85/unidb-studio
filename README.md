@@ -193,8 +193,12 @@ token's expiry. The endpoint exists only in the dev server, never in builds.
 - **CSV import is per-row `INSERT`, not bulk `COPY`.** unidb has no `COPY`
   path over REST, so import issues one `INSERT` statement per row (batched into
   one transaction per request to cut round-trips). It is fine for demo-sized
-  files, not for large data loads. Values are inserted as quoted string literals
-  and coerced to each column's type by the engine.
+  files, not for large data loads. Cell values are emitted **type-aware** from
+  the target table's catalog schema: numeric columns get bare literals, everything
+  else a quoted string (empty → `NULL`). This is required because the engine's
+  write path is strict — it does **not** coerce a quoted string into a numeric
+  column (a quoted `'5'` into an `INTEGER` errors), so the importer must know each
+  column's type rather than quoting everything.
 
 ## Contract notes
 
