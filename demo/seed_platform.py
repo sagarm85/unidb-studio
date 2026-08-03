@@ -70,11 +70,12 @@ def rule(t):
 
 
 WEBHOOKS = [
-    {"id": "orders-to-fulfilment", "target_url": "https://ops.example.com/hooks/orders",
+    # Local dev services (each on its own port), mimicking a real local setup.
+    {"id": "orders-to-fulfilment", "target_url": "http://localhost:4001/hooks/orders",
      "table_pattern": "orders", "events": ["insert", "update"], "signing_secret": "whsec_orders_9f2c", "enabled": True},
-    {"id": "new-customer-to-crm", "target_url": "https://crm.example.com/webhooks/customers",
+    {"id": "new-customer-to-crm", "target_url": "http://localhost:4002/webhooks/customers",
      "table_pattern": "customers", "events": ["insert"], "signing_secret": "whsec_crm_a71b", "enabled": True},
-    {"id": "invoice-paid-to-billing", "target_url": "https://billing.example.com/hooks/invoices",
+    {"id": "invoice-paid-to-billing", "target_url": "http://localhost:4003/hooks/invoices",
      "table_pattern": "invoices", "events": ["update"], "signing_secret": "whsec_billing_4d80", "enabled": False},
 ]
 
