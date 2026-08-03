@@ -130,6 +130,14 @@ const MONITOR_ITEMS: NavItem[] = [
   { tab: 'compare', label: 'Compare', icon: GitCompare },
 ];
 
+// Tab id -> human label, for the browser tab title. Built from the same nav
+// arrays so it can never drift from what the sidebar shows.
+const TAB_LABELS: Record<string, string> = Object.fromEntries(
+  [{ tab: 'overview', label: 'Project Overview' }, ...DATABASE_ITEMS, ...PLATFORM_ITEMS, ...API_ITEMS, ...MONITOR_ITEMS].map(
+    (i) => [i.tab, i.label],
+  ),
+);
+
 function initialTab(): Tab {
   const urlTab = new URLSearchParams(window.location.search).get('tab') as Tab | null;
   return urlTab && VALID_TABS.has(urlTab) ? urlTab : 'overview';
@@ -146,6 +154,8 @@ export default function App() {
     const url = new URL(window.location.href);
     url.searchParams.set('tab', tab);
     window.history.replaceState({}, '', url);
+    // Reflect the active tab in the browser tab title, e.g. "Webhooks · unidb studio".
+    document.title = `${TAB_LABELS[tab] ?? 'unidb'} · unidb studio`;
   }, [tab]);
 
   // A schema-read PERMISSION_DENIED (the current user just isn't grantted
