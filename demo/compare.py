@@ -19,7 +19,7 @@ Requirements:
 """
 
 import argparse, json, os, random, sys, time, urllib.request, urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE   = Path(__file__).parent
@@ -99,8 +99,13 @@ PROD_NAMES = ["Wireless Headphones","Smart Watch","Running Shoes","Coffee Maker"
               "Sunglasses","Notebook","Pen Set","Resistance Bands","Air Purifier",
               "Scented Candle","Wall Clock","Throw Blanket"]
 
-BASE_TS = int(datetime(2024, 1, 1).timestamp() * 1000)
-DAY_MS  = 86_400_000
+BASE_DT = datetime(2024, 1, 1)
+
+
+def fmt_ts(dt):
+    """A TIMESTAMP literal 'YYYY-MM-DD HH:MM:SS' (or None -> NULL). Both unidb and
+    Postgres accept it for a TIMESTAMP column."""
+    return dt.strftime('%Y-%m-%d %H:%M:%S') if dt else None
 
 
 def escape(v):
@@ -111,7 +116,8 @@ def escape(v):
 
 
 def rand_ts(rng, lo=0, hi=730):
-    return BASE_TS - rng.randint(lo * DAY_MS, hi * DAY_MS)
+    # A TIMESTAMP literal between `lo` and `hi` days before BASE_DT.
+    return fmt_ts(BASE_DT - timedelta(seconds=rng.randint(lo * 86_400, hi * 86_400)))
 
 
 SIZES = {
@@ -159,15 +165,15 @@ SCHEMA_DDL = [
     ("DROP customers",      "DROP TABLE IF EXISTS customers"),
     ("customers", """CREATE TABLE customers (
       id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL,
-      phone TEXT, city TEXT, country TEXT, created_at BIGINT NOT NULL)"""),
+      phone TEXT, city TEXT, country TEXT, created_at TIMESTAMP NOT NULL)"""),
     ("products", """CREATE TABLE products (
       id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
       price REAL NOT NULL, stock_qty INTEGER NOT NULL,
-      sku TEXT NOT NULL, created_at BIGINT NOT NULL)"""),
+      sku TEXT NOT NULL, created_at TIMESTAMP NOT NULL)"""),
     ("orders", """CREATE TABLE orders (
       id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL,
       status TEXT NOT NULL, total_amount REAL NOT NULL,
-      created_at BIGINT NOT NULL,
+      created_at TIMESTAMP NOT NULL,
       FOREIGN KEY (customer_id) REFERENCES customers(id))"""),
     ("order_items", """CREATE TABLE order_items (
       id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,
@@ -177,8 +183,8 @@ SCHEMA_DDL = [
       FOREIGN KEY (product_id) REFERENCES products(id))"""),
     ("invoices", """CREATE TABLE invoices (
       id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,
-      invoice_number TEXT NOT NULL, issued_at BIGINT NOT NULL,
-      due_at BIGINT NOT NULL, paid_at BIGINT, total_amount REAL NOT NULL,
+      invoice_number TEXT NOT NULL, issued_at TIMESTAMP NOT NULL,
+      due_at TIMESTAMP NOT NULL, paid_at TIMESTAMP, total_amount REAL NOT NULL,
       status TEXT NOT NULL,
       FOREIGN KEY (order_id) REFERENCES orders(id))"""),
     ("invoice_items", """CREATE TABLE invoice_items (
@@ -235,11 +241,11 @@ def generate_seed_rows(n_cust, n_prod, n_ord, seed=42):
         ord_rows.append((oid, cid, rng.choice(STATUSES), round(total, 2), ts))
 
         inv_id += 1
-        issued = BASE_TS - rng2.randint(0, 365 * DAY_MS)
-        due    = issued + 30 * DAY_MS
-        paid   = issued + rng2.randint(1, 25) * DAY_MS if rng2.random() < 0.75 else None
-        istatus = "paid" if paid else ("overdue" if rng2.random() < 0.3 else "issued")
-        inv_rows.append((inv_id, oid, f"INV-{inv_id:08d}", issued, due, paid,
+        issued_dt = BASE_DT - timedelta(days=rng2.randint(0, 365))
+        due_dt    = issued_dt + timedelta(days=30)
+        paid_dt   = issued_dt + timedelta(days=rng2.randint(1, 25)) if rng2.random() < 0.75 else None
+        istatus = "paid" if paid_dt else ("overdue" if rng2.random() < 0.3 else "issued")
+        inv_rows.append((inv_id, oid, f"INV-{inv_id:08d}", fmt_ts(issued_dt), fmt_ts(due_dt), fmt_ts(paid_dt),
                          round(rng2.uniform(10, 5000), 2), istatus))
         for _ in range(rng2.randint(1, 3)):
             ii_id += 1
