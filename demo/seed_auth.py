@@ -50,6 +50,7 @@ ROLES = ["analytics", "support", "ops"]
 POLICIES = [  # (name, table)
     ("cust_analytics_all", "customers"),
     ("cust_support_de", "customers"),
+    ("ord_ops_pending", "orders"),
 ]
 
 
@@ -157,6 +158,10 @@ def main():
     # supported, so this is one country, not a set.)
     ddl("CREATE POLICY cust_support_de ON customers FOR SELECT TO support "
         "USING (country = 'DE')")
+    # ops: write-side RLS — may only UPDATE orders that are still 'pending'
+    # (a WITH CHECK-style demo of row-level security on writes, not just reads).
+    ddl("CREATE POLICY ord_ops_pending ON orders FOR UPDATE TO ops "
+        "USING (status = 'pending')")
 
     rule("Users (password) + role membership")
     for uname, pw, role in USERS:

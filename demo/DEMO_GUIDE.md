@@ -186,6 +186,12 @@ python3 demo/compare.py --size 10k
 # For more dramatic results: --size 50k or --size 200k
 ```
 
+> **Ordering caveat:** `compare.py` **drops and recreates** the six e-commerce
+> tables, which also drops any RLS policies attached to them (e.g. the ones from
+> Step 5b — the Auth → Policies tab will go empty). If you run `compare.py`,
+> **re-run `python3 demo/seed_auth.py` afterward** to restore the roles' grants
+> and policies. Rule of thumb: `seed_auth.py` is always the **last** seeding step.
+
 ---
 
 ### Step 8 — Pre-demo checklist
@@ -535,15 +541,23 @@ this chart."
    > administered from the browser and enforced by the same engine that runs
    > your SQL."
 
-2. **Policies** — create a row-level-security policy live:
+2. **Policies** — Step 5b (`seed_auth.py`) pre-seeds **three** policies so this
+   tab isn't empty, each showing its real `target_roles`:
+   - `cust_analytics_all` — `customers` `FOR SELECT TO analytics USING (true)`
+   - `cust_support_de` — `customers` `FOR SELECT TO support USING (country = 'DE')`
+   - `ord_ops_pending` — `orders` `FOR UPDATE TO ops USING (status = 'pending')`
+     (write-side RLS: ops can only edit still-pending orders)
+
+   Then create one **live**:
    ```sql
    CREATE POLICY cust_self ON customers
      FOR SELECT TO authenticated
      USING (country = auth.jwt() ->> 'country');
    ```
    The helper buttons insert `current_user`, `auth.uid()`, and
-   `auth.jwt() ->> 'claim'` (always parenthesised). Each existing policy shows its
-   real `target_roles`.
+   `auth.jwt() ->> 'claim'` (always parenthesised).
+   > unidb RLS predicates are a **single AND-only comparison** — `IN(...)`/`OR`
+   > aren't supported, so scope to one value (e.g. `country = 'DE'`), not a set.
 
 3. **Preview** — `POST /auth/preview`: pick a user/role and run a query **as
    them**, seeing the RLS-filtered result — no impersonation token needed.
@@ -762,7 +776,8 @@ superuser `dev` — no token change needed.
 | Script | Purpose |
 |--------|---------|
 | `unified_txn_demo.py` | **Scene 0** — one atomic txn across relational + vector + graph + event, plus the rollback proof (self-contained; needs `dev` superuser) |
-| `seed_auth.py` | **Step 5b** — 3 demo users + roles + grants + an RLS policy so Auth / Preview / Switch-user differ visibly (needs the e-commerce seed + `dev` superuser) |
+| `seed_auth.py` | **Step 5b** — 3 demo users + roles + grants + 3 RLS policies so Auth / Preview / Switch-user differ visibly (needs the e-commerce seed + `dev` superuser). Run it **last** — `compare.py` wipes its policies. |
+| `invoices_1k.csv` | Data asset (not a script) — 1,000 invoice rows for the **CSV Import** tab; import into `invoices` |
 | `setup_schema.py` | Drop + recreate 6 tables with FK constraints |
 | `seed.py --size N` | Bulk-insert e-commerce data |
 | `benchmark.py` | 8 representative queries + engine latency stats |
@@ -779,7 +794,7 @@ superuser `dev` — no token change needed.
 | Database | Table Editor | Browse + paginate any table; inline cell edit, insert/delete, CSV export |
 | Database | SQL Editor | Live queries; saved/pinned queries; `EXPLAIN`/`EXPLAIN ANALYZE`; Embed button converts text → NEAR() vector |
 | Database | Schema | FK relationship ERD — always live from the engine catalog; DDL view |
-| Database | CSV Import | Batched per-row `INSERT` loader (demo-sized, not bulk `COPY`) |
+| Database | CSV Import | Batched per-row `INSERT` loader (demo-sized, not bulk `COPY`). Sample file: **`demo/invoices_1k.csv`** — 1,000 invoice rows (ids 900001+, valid `order_id` FKs, TIMESTAMP dates, ~24% unpaid → empty `paid_at`=NULL). Import into the `invoices` table. |
 | Platform | Storage | Object browser over `/storage/*`; owner column + public/private, per-object authz (item 125) |
 | Platform | Events | Real-time CDC stream — INSERT/UPDATE/DELETE over SSE in < 5 ms |
 | Platform | Auth | Roles · Grants · Policies · Preview · Whoami · Sessions · Sign-in flows (RBAC, RLS, MFA, OAuth, magic-link) |
