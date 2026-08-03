@@ -459,7 +459,12 @@ export function StoragePanel() {
                             </div>
                           </td>
                           <td className="px-3 py-2 text-right font-mono">{fmtSize(o.size)}</td>
-                          <td className="px-3 py-2 text-text-muted">{fmtDate(o.last_modified)}</td>
+                          <td
+                            className="px-3 py-2 text-text-muted"
+                            title={o.last_modified ? new Date(o.last_modified).toLocaleString() : undefined}
+                          >
+                            {fmtDate(o.last_modified)}
+                          </td>
                           <td className="max-w-[120px] truncate px-3 py-2 font-mono text-xs text-text-muted" title={o.owner}>
                             {o.owner ?? '—'}
                           </td>
