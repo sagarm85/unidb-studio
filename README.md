@@ -70,6 +70,13 @@ A left-nav SPA over four groups of tabs, all wired to real engine data —
   `near_<table>(vector, k)` vector similarity), starter queries/mutations
   built from the real schema, and a query editor that runs real
   queries/mutations and renders the real `{data, errors}` envelope.
+- **Functions** — stored SQL functions callable over RPC (item 147,
+  Supabase `pg_proc`/`rpc()` parity). Lists every registered function with
+  its params, run-as identity, and SQL body (`GET /functions`); creates/
+  upserts one (`POST /functions`); calls it with named or positional JSON
+  args and renders the last statement's result (`POST /rest/v1/rpc/{fn}`);
+  and deletes it (`DELETE /functions/{name}`). Admin surface is superuser-
+  only; the call route runs under invoker/`run_as` identity.
 
 **Monitor:** Observability, Logs, Compare (unidb vs Postgres benchmark
 viewer).

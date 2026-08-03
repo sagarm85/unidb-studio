@@ -174,6 +174,25 @@ topic in the UI to see it work).
 
 ---
 
+### Step 5d — Seed stored functions (RPC)
+
+So the **Functions** tab (API group) isn't empty:
+
+```bash
+python3 demo/seed_functions.py
+```
+
+Registers four stored functions over the e-commerce schema (item 147, Supabase
+`pg_proc`/`rpc()` parity): `orders_by_status(status)`, `revenue_by_status()`,
+`customer_orders(customer_id)`, and `mark_order_paid(order_id)` (a two-statement
+mutate-then-read that runs in one transaction). In the UI, hit **▶ Call** on
+`revenue_by_status` to run a live aggregate over all orders; each function is a
+parameterized SQL body invoked at `POST /rest/v1/rpc/{fn}`. Superuser-only to
+register; callable by any authenticated principal under invoker/`run_as`
+identity.
+
+---
+
 ### Step 6 — Load vector + document data
 
 ```bash
@@ -750,6 +769,8 @@ in-memory only and never swapped into the Studio's own bearer token.
 | Table Editor shows no rows | Run `python3 demo/seed.py --size 50k` |
 | `documents` table not found (Scene 7) | Run `python3 demo/vector_demo.py` |
 | `doc_embeddings` not found (Scene 8) | Run `python3 demo/embed_search.py` |
+| Functions tab empty | Run `python3 demo/seed_functions.py` |
+| Functions tab / `/functions` 404s | Server binary predates item 147 — rebuild: `cargo build --release -p unidb-server-full` and restart |
 | vec_distance COLUMN_NOT_FOUND | Remove `vec_distance` from WHERE — use it in SELECT only |
 | Compare tab empty | Run `python3 demo/compare.py --size 10k` |
 | Docker Hub TLS timeout on Path B | Switch to Path A (local binary) — `postgres:16-alpine` is a tiny image that almost always pulls; the Rust base image is the one that times out |
