@@ -60,6 +60,9 @@ interface Policy {
   usingExpr: string;
   withCheckExpr: string | null;
   enforced: boolean;
+  // Roles the policy is scoped to (the CREATE POLICY `TO …` clause). Empty =
+  // "*" = applies to every role. Sourced from unidb_catalog.policies.target_roles.
+  targetRoles: string[];
 }
 interface AuthMeta {
   open_mode: boolean;
@@ -134,16 +137,22 @@ async function fetchGrants(): Promise<Grant[]> {
 }
 async function fetchPolicies(): Promise<Policy[]> {
   const { results } = await runSql(
-    'SELECT name, table_name, operation, using_expr, with_check_expr, enforced FROM unidb_catalog.policies',
+    'SELECT name, table_name, operation, using_expr, with_check_expr, enforced, target_roles FROM unidb_catalog.policies',
   );
-  return (results[0]?.rows ?? []).map((r: any[]) => ({
-    name: String(r[0]),
-    table: String(r[1]),
-    operation: String(r[2]),
-    usingExpr: String(r[3]),
-    withCheckExpr: r[4] == null || r[4] === 'NULL' ? null : String(r[4]),
-    enforced: !!r[5],
-  }));
+  return (results[0]?.rows ?? []).map((r: any[]) => {
+    // target_roles is a comma-separated list; "*" (or null) means every role.
+    const raw = r[6] == null ? '' : String(r[6]).trim();
+    const targetRoles = raw === '' || raw === '*' ? [] : raw.split(',').map((s) => s.trim()).filter(Boolean);
+    return {
+      name: String(r[0]),
+      table: String(r[1]),
+      operation: String(r[2]),
+      usingExpr: String(r[3]),
+      withCheckExpr: r[4] == null || r[4] === 'NULL' ? null : String(r[4]),
+      enforced: !!r[5],
+      targetRoles,
+    };
+  });
 }
 
 export function AuthPanel({ tables }: { tables: { name: string }[] }) {
@@ -244,7 +253,7 @@ export function AuthPanel({ tables }: { tables: { name: string }[] }) {
           <RolesTab roles={roles} users={users} roleMembers={roleMembers} grants={grants} grantees={grantees} onMutated={loadAll} />
         )}
         {subtab === 'grants' && <GrantsTab grants={grants} grantees={grantees} tables={tableNames} onMutated={loadAll} />}
-        {subtab === 'policies' && <PoliciesTab policies={policies} tables={tableNames} onMutated={loadAll} />}
+        {subtab === 'policies' && <PoliciesTab policies={policies} tables={tableNames} roles={roles.map((r) => r.name)} onMutated={loadAll} />}
         {subtab === 'preview' && <PreviewTab users={users} />}
         {subtab === 'whoami' && <WhoamiTab />}
         {subtab === 'sessions' && <SessionsTab />}
@@ -872,22 +881,27 @@ const POLICY_TEMPLATES: {
   },
 ];
 
-function buildPolicySql(name: string, table: string, op: string, predicate: string, withCheck: string): string {
+function buildPolicySql(name: string, table: string, op: string, roles: string[], predicate: string, withCheck: string): string {
   const n = name.trim() || '<name>';
   const t = table || '<table>';
   const pred = predicate.trim() || '<predicate>';
+  // Scope the policy to specific roles when chosen; omit TO → applies to all roles.
+  const toClause = roles.length ? ` TO ${roles.map(quoteIdent).join(', ')}` : '';
   const withCheckClause = withCheck.trim() ? ` WITH CHECK (${withCheck.trim()})` : '';
-  return `CREATE POLICY ${quoteIdent(n)} ON ${quoteIdent(t)} FOR ${op} USING (${pred})${withCheckClause}`;
+  return `CREATE POLICY ${quoteIdent(n)} ON ${quoteIdent(t)} FOR ${op}${toClause} USING (${pred})${withCheckClause}`;
 }
 
-function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tables: string[]; onMutated: () => Promise<void> }) {
+function PoliciesTab({ policies, tables, roles, onMutated }: { policies: Policy[]; tables: string[]; roles: string[]; onMutated: () => Promise<void> }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [newOpen, setNewOpen] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftTable, setDraftTable] = useState('');
   const [draftOp, setDraftOp] = useState<(typeof POLICY_OPS)[number]>('SELECT');
+  const [draftRoles, setDraftRoles] = useState<Set<string>>(new Set());
   const [draftPredicate, setDraftPredicate] = useState('');
   const [draftWithCheck, setDraftWithCheck] = useState('');
+  const toggleRole = (r: string) =>
+    setDraftRoles((s) => { const n = new Set(s); n.has(r) ? n.delete(r) : n.add(r); return n; });
   const [dropConfirm, setDropConfirm] = useState<{ name: string; table: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CatalogError | null>(null);
@@ -909,10 +923,11 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
     const n = draftName.trim();
     const pred = draftPredicate.trim();
     if (!n || !draftTable || !pred) return setError({ message: 'name, table, and predicate are all required' });
-    run(buildPolicySql(n, draftTable, draftOp, pred, draftWithCheck), 'Policy created', () => {
+    run(buildPolicySql(n, draftTable, draftOp, Array.from(draftRoles), pred, draftWithCheck), 'Policy created', () => {
       setDraftName('');
       setDraftTable('');
       setDraftOp('SELECT');
+      setDraftRoles(new Set());
       setDraftPredicate('');
       setDraftWithCheck('');
       setNewOpen(false);
@@ -983,6 +998,17 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
                         </Badge>
                       )}
                     </div>
+                    <div className="flex w-40 shrink-0 flex-wrap items-center gap-1" title="Roles this policy is scoped to (the CREATE POLICY TO clause)">
+                      {p.targetRoles.length > 0 ? (
+                        p.targetRoles.map((r) => (
+                          <span key={r} className="rounded-full border border-border bg-secondary px-1.5 py-0 font-mono text-[11px] text-text-muted">
+                            {r}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-xs text-text-faint italic">all roles</span>
+                      )}
+                    </div>
                     <button
                       className="flex min-w-0 flex-1 items-start gap-1 text-left"
                       onClick={() => toggleExpand(key)}
@@ -1051,6 +1077,34 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
                   </select>
                 </label>
               </div>
+              <div className="flex flex-col gap-1 text-sm text-text-light">
+                Apply to roles
+                {roles.length === 0 ? (
+                  <span className="text-xs text-text-muted">No roles defined — the policy will apply to all roles.</span>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {roles.map((r) => {
+                      const on = draftRoles.has(r);
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => toggleRole(r)}
+                          className={cn(
+                            'rounded-full border px-2.5 py-0.5 font-mono text-xs',
+                            on ? 'border-brand bg-brand-subtle text-brand' : 'border-border bg-secondary text-text-light hover:border-border-strong',
+                          )}
+                        >
+                          {r}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <span className="text-xs text-text-muted">
+                  {draftRoles.size === 0 ? 'None selected → applies to every role (no TO clause).' : `Scoped to: ${Array.from(draftRoles).join(', ')}`}
+                </span>
+              </div>
               <label className="flex flex-col gap-1 text-sm text-text-light">
                 USING expression
                 <Textarea
@@ -1078,7 +1132,7 @@ function PoliciesTab({ policies, tables, onMutated }: { policies: Policy[]; tabl
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-semibold tracking-wide text-text-muted uppercase">SQL preview</span>
                 <pre className="m-0 overflow-x-auto rounded-md border border-border bg-secondary px-3 py-2 font-mono text-sm leading-relaxed whitespace-pre-wrap text-text-light">
-                  {buildPolicySql(draftName, draftTable, draftOp, draftPredicate, draftWithCheck)}
+                  {buildPolicySql(draftName, draftTable, draftOp, Array.from(draftRoles), draftPredicate, draftWithCheck)}
                 </pre>
               </div>
             </div>
