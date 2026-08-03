@@ -14,6 +14,7 @@ interface StorageObject {
   size?: number;
   last_modified?: string | null;
   content_type?: string;
+  owner?: string;
 }
 interface Folder {
   key: string;
@@ -424,6 +425,7 @@ export function StoragePanel() {
                       <th className="sticky top-0 z-1 bg-card px-3 py-2 text-left text-xs font-semibold tracking-wide text-text-muted uppercase">Name</th>
                       <th className="sticky top-0 z-1 bg-card px-3 py-2 text-right text-xs font-semibold tracking-wide text-text-muted uppercase">Size</th>
                       <th className="sticky top-0 z-1 bg-card px-3 py-2 text-left text-xs font-semibold tracking-wide text-text-muted uppercase">Modified</th>
+                      <th className="sticky top-0 z-1 bg-card px-3 py-2 text-left text-xs font-semibold tracking-wide text-text-muted uppercase">Owner</th>
                       <th className="sticky top-0 z-1 bg-card px-3 py-2 text-left text-xs font-semibold tracking-wide text-text-muted uppercase">Type</th>
                       <th className="sticky top-0 z-1 bg-card px-3 py-2" />
                     </tr>
@@ -438,6 +440,7 @@ export function StoragePanel() {
                           </button>
                         </td>
                         <td className="px-3 py-2 text-right text-text-muted">—</td>
+                        <td className="px-3 py-2 text-text-muted">—</td>
                         <td className="px-3 py-2 text-text-muted">—</td>
                         <td className="px-3 py-2 text-text-muted">folder</td>
                         <td />
@@ -457,6 +460,9 @@ export function StoragePanel() {
                           </td>
                           <td className="px-3 py-2 text-right font-mono">{fmtSize(o.size)}</td>
                           <td className="px-3 py-2 text-text-muted">{fmtDate(o.last_modified)}</td>
+                          <td className="max-w-[120px] truncate px-3 py-2 font-mono text-xs text-text-muted" title={o.owner}>
+                            {o.owner ?? '—'}
+                          </td>
                           <td className="max-w-[100px] truncate px-3 py-2 text-xs text-text-muted" title={o.content_type}>
                             {o.content_type?.split('/')[1] ?? '—'}
                           </td>
